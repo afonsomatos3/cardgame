@@ -4,20 +4,35 @@ import pygame
 import sys
 
 from game_manager import GameManager, Player
-from card import Card
+from card import Card, set_card_scale
 from hand_manager import HandManager
 from battlefield import Battlefield, LocationPanel
-from ui import TurnUI, DeckUI, DrawMenu, ReinforcementUI
+from ui import TurnUI, DeckUI, DrawMenu, ReinforcementUI, CombatLogUI, GameOverUI
+from menu import MainMenu, DeckBuilder
 import cards_database as db
 
 
 # Screen settings
+BASE_WIDTH = 1280
+BASE_HEIGHT = 720
 SCREEN_WIDTH = 1280
 SCREEN_HEIGHT = 720
 FPS = 60
 
 # Colors
 BG_COLOR = (30, 35, 40)
+
+# Game states
+STATE_MENU = "menu"
+STATE_DECK_BUILDER = "deck_builder"
+STATE_GAME = "game"
+
+
+def calculate_scale(width: int, height: int) -> float:
+    """Calculate scale factor based on screen size."""
+    scale_x = width / BASE_WIDTH
+    scale_y = height / BASE_HEIGHT
+    return min(scale_x, scale_y)
 
 
 class Game:
@@ -35,8 +50,38 @@ class Game:
         self.screen_width = SCREEN_WIDTH
         self.screen_height = SCREEN_HEIGHT
 
-        # Initialize game manager
+        # Game state
+        self.state = STATE_MENU
+
+        # Custom decks (can be modified in deck builder)
+        self.attacker_deck = ["Footman", "Footman", "Archer", "Eagle", "Knight"]
+        self.defender_deck = ["Footman", "Footman", "Knight", "War_Hound", "Guardian"]
+
+        # Main menu and deck builder
+        self.main_menu = MainMenu(self.screen_width, self.screen_height)
+        self.deck_builder = DeckBuilder(self.screen_width, self.screen_height)
+
+        # Game components (initialized when game starts)
+        self.game_manager = None
+        self.turn_ui = None
+        self.battlefield = None
+        self.location_panel = None
+        self.attacker_hand = None
+        self.defender_hand = None
+        self.deck_ui = None
+        self.draw_menu = None
+        self.reinforcement_ui = None
+        self.combat_log_ui = None
+        self.game_over_ui = None
+        self.dragging_card = None
+        self.dragging_from_hand = None
+
+    def _init_game(self):
+        """Initialize a new game with current deck settings."""
+        # Initialize game manager with custom decks
         self.game_manager = GameManager()
+        self.game_manager.player_decks[Player.ATTACKER] = self.attacker_deck.copy()
+        self.game_manager.player_decks[Player.DEFENDER] = self.defender_deck.copy()
         self.game_manager.on_turn_changed = self._on_turn_changed
         self.game_manager.on_card_arrived = self._on_card_arrived
 
@@ -44,13 +89,16 @@ class Game:
         self.turn_ui = TurnUI(self.screen_width)
         self.battlefield = Battlefield(self.screen_width, self.screen_height)
         self.location_panel = LocationPanel(self.screen_width, self.screen_height)
+        # Give location panel access to game state for movement
+        self.location_panel.game_manager = self.game_manager
+        self.location_panel.battlefield = self.battlefield
 
         # Hand managers for both players
         self.attacker_hand = HandManager(self.screen_width, self.screen_height, is_bottom=True)
         self.defender_hand = HandManager(self.screen_width, self.screen_height, is_bottom=False)
 
-        # Deck UI
-        self.deck_ui = DeckUI(self.screen_width - 100, self.screen_height - 150)
+        # Deck UI - positioned for bigger size
+        self.deck_ui = DeckUI(self.screen_width - 120, self.screen_height - 180)
 
         # Draw menu
         self.draw_menu = DrawMenu(self.screen_width, self.screen_height)
@@ -58,12 +106,21 @@ class Game:
         # Reinforcement UI
         self.reinforcement_ui = ReinforcementUI(self.screen_width - 150, 80)
 
+        # Combat log UI
+        self.combat_log_ui = CombatLogUI(self.screen_width, self.screen_height)
+
+        # Game over UI
+        self.game_over_ui = GameOverUI(self.screen_width, self.screen_height)
+
         # Currently dragging card
         self.dragging_card: Card | None = None
         self.dragging_from_hand: HandManager | None = None
 
         # Give starting cards to both players
         self._setup_starting_hands()
+
+        # Update hand positions based on current player
+        self._update_hand_positions()
 
     def _setup_starting_hands(self):
         """Setup starting hands for both players."""
@@ -81,6 +138,52 @@ class Game:
         self.turn_ui.update(turn, current_player)
         # Update battlefield visibility for current player
         self.battlefield.set_current_player(self.game_manager.current_player)
+        # Swap hand positions based on current player
+        self._update_hand_positions()
+
+    def _update_hand_positions(self):
+        """Update hand positions based on current player (current player's hand at bottom)."""
+        if self.game_manager.current_player == Player.ATTACKER:
+            # Attacker at bottom, defender at top
+            self.attacker_hand.is_bottom = True
+            self.defender_hand.is_bottom = False
+        else:
+            # Defender at bottom, attacker at top
+            self.attacker_hand.is_bottom = False
+            self.defender_hand.is_bottom = True
+
+        # Recalculate positions
+        self.attacker_hand.resize(self.screen_width, self.screen_height)
+        self.defender_hand.resize(self.screen_width, self.screen_height)
+
+    def _resolve_combat(self):
+        """Resolve combat at all locations and sync battlefield."""
+        # Run combat in game manager
+        combat_results = self.game_manager.resolve_all_combat()
+
+        # Sync battlefield visuals with game manager state
+        self._sync_battlefield_from_manager()
+
+        # Show combat log if there were battles
+        if combat_results:
+            self.combat_log_ui.show(combat_results)
+
+        # Check win condition
+        winner = self.game_manager.check_win_condition()
+        if winner:
+            winner_name = "Attacker" if winner == Player.ATTACKER else "Defender"
+            self.game_over_ui.show(winner_name)
+
+    def _sync_battlefield_from_manager(self):
+        """Sync battlefield visual state with game manager state."""
+        for location_name in self.game_manager.LOCATIONS:
+            manager_atk = self.game_manager.battlefield_cards[location_name]["attacker"]
+            manager_def = self.game_manager.battlefield_cards[location_name]["defender"]
+
+            if location_name in self.battlefield.locations:
+                loc = self.battlefield.locations[location_name]
+                loc.attacker_cards = manager_atk.copy()
+                loc.defender_cards = manager_def.copy()
 
     def _on_card_arrived(self, card_id: str, card_info: list, player: Player):
         """Callback when a card arrives in hand."""
@@ -117,20 +220,77 @@ class Game:
 
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:  # Left click
-                    self._handle_mouse_down(event.pos)
+                    # Handle menu state
+                    if self.state == STATE_MENU:
+                        action = self.main_menu.handle_click(event.pos)
+                        if action == "start_game":
+                            self._init_game()
+                            self.state = STATE_GAME
+                        elif action == "deck_attacker":
+                            self.deck_builder.show("attacker", self.attacker_deck)
+                            self.state = STATE_DECK_BUILDER
+                        elif action == "deck_defender":
+                            self.deck_builder.show("defender", self.defender_deck)
+                            self.state = STATE_DECK_BUILDER
+                        elif action == "quit":
+                            self.running = False
+                    elif self.state == STATE_DECK_BUILDER:
+                        result = self.deck_builder.handle_click(event.pos)
+                        if result == "done":
+                            # Save the edited deck
+                            if self.deck_builder.player_type == "attacker":
+                                self.attacker_deck = self.deck_builder.get_deck()
+                            else:
+                                self.defender_deck = self.deck_builder.get_deck()
+                            # Show the main menu again
+                            self.main_menu.show()
+                            self.state = STATE_MENU
+                    elif self.state == STATE_GAME:
+                        # Check game over first (blocks all interaction)
+                        if self.game_over_ui.is_visible:
+                            continue
+
+                        # Check combat log
+                        if self.combat_log_ui.is_visible:
+                            if self.combat_log_ui.handle_click(event.pos):
+                                # Check win condition after closing combat log
+                                winner = self.game_manager.check_win_condition()
+                                if winner:
+                                    winner_name = "Attacker" if winner == Player.ATTACKER else "Defender"
+                                    self.game_over_ui.show(winner_name)
+                            continue
+
+                        self._handle_mouse_down(event.pos)
 
             elif event.type == pygame.MOUSEBUTTONUP:
                 if event.button == 1:  # Left click
-                    self._handle_mouse_up(event.pos)
+                    if self.state == STATE_GAME:
+                        self._handle_mouse_up(event.pos)
 
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
-                    if self.location_panel.is_visible:
-                        self.location_panel.hide()
-                    elif self.draw_menu.is_visible:
-                        self.draw_menu.hide()
-                    else:
+                    if self.state == STATE_MENU:
                         self.running = False
+                    elif self.state == STATE_DECK_BUILDER:
+                        # Go back to menu
+                        if self.deck_builder.player_type == "attacker":
+                            self.attacker_deck = self.deck_builder.get_deck()
+                        else:
+                            self.defender_deck = self.deck_builder.get_deck()
+                        # Show the main menu again
+                        self.main_menu.show()
+                        self.state = STATE_MENU
+                    elif self.state == STATE_GAME:
+                        if self.game_over_ui.is_visible:
+                            self.running = False
+                        elif self.combat_log_ui.is_visible:
+                            self.combat_log_ui.hide()
+                        elif self.location_panel.is_visible:
+                            self.location_panel.hide()
+                        elif self.draw_menu.is_visible:
+                            self.draw_menu.hide()
+                        else:
+                            self.running = False
 
     def _handle_resize(self, width: int, height: int):
         """Handle window resize."""
@@ -138,18 +298,35 @@ class Game:
         self.screen_height = height
         self.screen = pygame.display.set_mode((width, height), pygame.RESIZABLE)
 
-        self.turn_ui.resize(width)
-        self.battlefield.resize(width, height)
-        self.location_panel.resize(width, height)
-        self.attacker_hand.resize(width, height)
-        self.defender_hand.resize(width, height)
-        self.draw_menu.resize(width, height)
-        self.deck_ui.x = width - 100
-        self.deck_ui.y = height - 150
-        self.reinforcement_ui.x = width - 150
+        # Resize menu and deck builder
+        self.main_menu.resize(width, height)
+        self.deck_builder.resize(width, height)
+
+        # Only resize game components if game is initialized
+        if self.state == STATE_GAME:
+            # Calculate and apply scale
+            scale = calculate_scale(width, height)
+            set_card_scale(scale)
+
+            self.turn_ui.resize(width)
+            self.battlefield.resize(width, height)
+            self.location_panel.resize(width, height)
+            self.attacker_hand.resize(width, height)
+            self.defender_hand.resize(width, height)
+            self.draw_menu.resize(width, height)
+            self.combat_log_ui.resize(width, height)
+            self.game_over_ui.resize(width, height)
+
+            # Scale UI positions
+            self.deck_ui.x = width - int(120 * scale)
+            self.deck_ui.y = height - int(180 * scale)
+            self.reinforcement_ui.x = width - int(160 * scale)
 
     def _handle_mouse_motion(self, pos: tuple):
         """Handle mouse motion."""
+        if self.state != STATE_GAME:
+            return
+
         self.turn_ui.handle_mouse_motion(pos)
         self.battlefield.handle_mouse_motion(pos)
         self.deck_ui.handle_mouse_motion(pos)
@@ -179,7 +356,12 @@ class Game:
 
         # Check end turn button
         if self.turn_ui.handle_click(pos):
+            prev_turn = self.game_manager.current_turn
             self.game_manager.end_turn()
+
+            # If turn number increased, both players passed - resolve combat
+            if self.game_manager.current_turn > prev_turn:
+                self._resolve_combat()
             return
 
         # Check deck click
@@ -256,48 +438,68 @@ class Game:
 
     def update(self, dt: float):
         """Update game state."""
-        self.attacker_hand.update(dt)
-        self.defender_hand.update(dt)
+        if self.state == STATE_MENU:
+            # Menu doesn't need updates
+            pass
+        elif self.state == STATE_DECK_BUILDER:
+            # Deck builder doesn't need updates
+            pass
+        elif self.state == STATE_GAME:
+            self.attacker_hand.update(dt)
+            self.defender_hand.update(dt)
 
-        # Update reinforcement UI
-        player = self.game_manager.current_player
-        reinforcements = self.game_manager.get_hand_reinforcements(player)
-        self.reinforcement_ui.update(reinforcements)
+            # Update reinforcement UI
+            player = self.game_manager.current_player
+            reinforcements = self.game_manager.get_hand_reinforcements(player)
+            self.reinforcement_ui.update(reinforcements)
 
     def draw(self):
         """Draw the game."""
         self.screen.fill(BG_COLOR)
 
-        # Draw battlefield
-        self.battlefield.draw(self.screen)
+        if self.state == STATE_MENU:
+            # Draw main menu
+            self.main_menu.draw(self.screen)
+        elif self.state == STATE_DECK_BUILDER:
+            # Draw deck builder
+            self.deck_builder.draw(self.screen)
+        elif self.state == STATE_GAME:
+            # Draw battlefield
+            self.battlefield.draw(self.screen)
 
-        # Draw both hands (opponent hand shown face-down)
-        if self.game_manager.current_player == Player.ATTACKER:
-            # Draw defender hand (opponent) - face down
-            self.defender_hand.draw(self.screen, face_down=True)
-            # Draw attacker hand (current player) - face up
-            self.attacker_hand.draw(self.screen, face_down=False)
-        else:
-            # Draw attacker hand (opponent) - face down
-            self.attacker_hand.draw(self.screen, face_down=True)
-            # Draw defender hand (current player) - face up
-            self.defender_hand.draw(self.screen, face_down=False)
+            # Draw both hands (opponent hand shown face-down)
+            if self.game_manager.current_player == Player.ATTACKER:
+                # Draw defender hand (opponent) - face down
+                self.defender_hand.draw(self.screen, face_down=True)
+                # Draw attacker hand (current player) - face up
+                self.attacker_hand.draw(self.screen, face_down=False)
+            else:
+                # Draw attacker hand (opponent) - face down
+                self.attacker_hand.draw(self.screen, face_down=True)
+                # Draw defender hand (current player) - face up
+                self.defender_hand.draw(self.screen, face_down=False)
 
-        # Draw UI
-        self.turn_ui.draw(self.screen)
-        player = self.game_manager.current_player
-        can_draw = self.game_manager.can_draw_card(player)
-        self.deck_ui.draw(self.screen, len(self._get_current_deck()), can_draw)
-        self.reinforcement_ui.draw(self.screen)
+            # Draw UI
+            self.turn_ui.draw(self.screen)
+            player = self.game_manager.current_player
+            can_draw = self.game_manager.can_draw_card(player)
+            self.deck_ui.draw(self.screen, len(self._get_current_deck()), can_draw)
+            self.reinforcement_ui.draw(self.screen)
 
-        # Draw location panel (on top)
-        self.location_panel.draw(self.screen)
+            # Draw location panel (on top)
+            self.location_panel.draw(self.screen)
 
-        # Draw draw menu (on top)
-        self.draw_menu.draw(self.screen)
+            # Draw draw menu (on top)
+            self.draw_menu.draw(self.screen)
 
-        # Draw help text
-        self._draw_help()
+            # Draw combat log (on top of everything else)
+            self.combat_log_ui.draw(self.screen)
+
+            # Draw game over (very top)
+            self.game_over_ui.draw(self.screen)
+
+            # Draw help text
+            self._draw_help()
 
         pygame.display.flip()
 

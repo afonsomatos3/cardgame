@@ -4,10 +4,20 @@ import pygame
 import os
 import cards_database as db
 
-# Card dimensions
-CARD_WIDTH = 125
-CARD_HEIGHT = 175
-CARD_FOCUS_SCALE = 1.3
+# Card dimensions (base size at 1280x720)
+BASE_CARD_WIDTH = 240
+BASE_CARD_HEIGHT = 336
+CARD_FOCUS_SCALE = 1.15
+
+# These will be scaled based on screen size
+CARD_WIDTH = BASE_CARD_WIDTH
+CARD_HEIGHT = BASE_CARD_HEIGHT
+
+def set_card_scale(scale: float):
+    """Update card dimensions based on screen scale."""
+    global CARD_WIDTH, CARD_HEIGHT
+    CARD_WIDTH = int(BASE_CARD_WIDTH * scale)
+    CARD_HEIGHT = int(BASE_CARD_HEIGHT * scale)
 
 
 class Card:
@@ -125,36 +135,68 @@ class Card:
             cost = self.card_info[db.IDX_COST]
             attack = self.card_info[db.IDX_ATTACK]
             health = self.card_info[db.IDX_HEALTH]
+            special = self.card_info[db.IDX_SPECIAL] if len(self.card_info) > db.IDX_SPECIAL else ""
 
-            font_small = pygame.font.Font(None, 18)
-            font_medium = pygame.font.Font(None, 22)
+            font_small = pygame.font.Font(None, 22)
+            font_medium = pygame.font.Font(None, 28)
+            font_large = pygame.font.Font(None, 36)
 
             # Name at top
             name_surface = font_medium.render(name, True, (50, 40, 30))
-            name_rect = name_surface.get_rect(centerx=self.width // 2, top=5)
+            name_rect = name_surface.get_rect(centerx=self.width // 2, top=6)
             self.base_surface.blit(name_surface, name_rect)
 
-            # Cost circle in top-left
-            pygame.draw.circle(self.base_surface, (70, 130, 180), (18, 18), 14)
-            pygame.draw.circle(self.base_surface, (50, 100, 150), (18, 18), 14, 2)
+            # Cost circle in top-left - larger
+            pygame.draw.circle(self.base_surface, (70, 130, 180), (22, 22), 17)
+            pygame.draw.circle(self.base_surface, (50, 100, 150), (22, 22), 17, 2)
             cost_text = font_medium.render(str(cost), True, (255, 255, 255))
-            cost_rect = cost_text.get_rect(center=(18, 18))
+            cost_rect = cost_text.get_rect(center=(22, 22))
             self.base_surface.blit(cost_text, cost_rect)
 
-            # Stats at bottom
-            stats_y = self.height - 22
+            # Stats at bottom - larger circles and bigger font
+            stats_y = self.height - 28
 
-            # Attack (left)
-            pygame.draw.circle(self.base_surface, (200, 60, 60), (22, stats_y), 12)
-            atk_text = font_small.render(str(attack), True, (255, 255, 255))
-            atk_rect = atk_text.get_rect(center=(22, stats_y))
+            # Attack (left) - red circle with large text
+            pygame.draw.circle(self.base_surface, (200, 60, 60), (26, stats_y), 15)
+            pygame.draw.circle(self.base_surface, (150, 40, 40), (26, stats_y), 15, 2)
+            atk_text = font_large.render(str(attack), True, (255, 255, 255))
+            atk_rect = atk_text.get_rect(center=(26, stats_y))
             self.base_surface.blit(atk_text, atk_rect)
 
-            # Health (right)
-            pygame.draw.circle(self.base_surface, (60, 160, 60), (self.width - 22, stats_y), 12)
-            hp_text = font_small.render(str(health), True, (255, 255, 255))
-            hp_rect = hp_text.get_rect(center=(self.width - 22, stats_y))
+            # Health (right) - green circle with large text
+            pygame.draw.circle(self.base_surface, (60, 160, 60), (self.width - 26, stats_y), 15)
+            pygame.draw.circle(self.base_surface, (40, 120, 40), (self.width - 26, stats_y), 15, 2)
+            hp_text = font_large.render(str(health), True, (255, 255, 255))
+            hp_rect = hp_text.get_rect(center=(self.width - 26, stats_y))
             self.base_surface.blit(hp_text, hp_rect)
+
+            # Special text area (if card has special ability)
+            if special:
+                special_y = self.height - 80
+                special_font = pygame.font.Font(None, 16)
+                # Draw special text background
+                special_bg = pygame.Surface((self.width - 12, 50), pygame.SRCALPHA)
+                pygame.draw.rect(special_bg, (240, 220, 180, 200), (0, 0, self.width - 12, 50), border_radius=4)
+                pygame.draw.rect(special_bg, (139, 90, 43), (0, 0, self.width - 12, 50), 1, border_radius=4)
+                self.base_surface.blit(special_bg, (6, special_y))
+                # Wrap and render special text
+                words = special.split()
+                lines = []
+                current_line = []
+                for word in words:
+                    test_line = ' '.join(current_line + [word])
+                    if special_font.size(test_line)[0] < self.width - 14:
+                        current_line.append(word)
+                    else:
+                        if current_line:
+                            lines.append(' '.join(current_line))
+                        current_line = [word]
+                if current_line:
+                    lines.append(' '.join(current_line))
+                for i, line in enumerate(lines[:2]):  # Max 2 lines
+                    special_text = special_font.render(line, True, (50, 40, 30))
+                    text_rect = special_text.get_rect(centerx=self.width // 2, y=special_y + 5 + i * 20)
+                    self.base_surface.blit(special_text, text_rect)
 
     def update(self, dt: float):
         """Update card position and scale with smooth interpolation."""
