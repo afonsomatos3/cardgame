@@ -75,20 +75,25 @@ class HandManager:
         for card in self.cards:
             card.update(dt)
 
-    def draw(self, screen: pygame.Surface):
-        """Draw all cards, with focused/dragged card on top."""
+    def draw(self, screen: pygame.Surface, face_down: bool = False):
+        """Draw all cards, with focused/dragged card on top.
+
+        Args:
+            screen: The surface to draw on
+            face_down: If True, draw all cards face-down (for opponent's hand)
+        """
         # Draw non-focused cards first
         for card in self.cards:
             if card != self.focused_card and card != self.dragging_card:
-                card.draw(screen)
+                card.draw(screen, face_down)
 
         # Draw focused card on top
         if self.focused_card and self.focused_card != self.dragging_card:
-            self.focused_card.draw(screen)
+            self.focused_card.draw(screen, face_down)
 
-        # Draw dragging card on very top
+        # Draw dragging card on very top (never face down when dragging)
         if self.dragging_card:
-            self.dragging_card.draw(screen)
+            self.dragging_card.draw(screen, False)
 
     def handle_mouse_motion(self, mouse_pos: tuple):
         """Handle mouse movement for hover effects."""

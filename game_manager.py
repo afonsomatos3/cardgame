@@ -39,10 +39,10 @@ class GameManager:
             Player.DEFENDER: []
         }
 
-        # Player decks
+        # Player decks (Avatar is NOT in deck - it starts in hand)
         self.player_decks: dict[Player, list] = {
-            Player.ATTACKER: ["Avatar", "Footman", "Footman", "Archer", "Eagle", "Knight"],
-            Player.DEFENDER: ["Avatar", "Footman", "Footman", "Knight", "War_Hound", "Guardian"]
+            Player.ATTACKER: ["Footman", "Footman", "Archer", "Eagle", "Knight"],
+            Player.DEFENDER: ["Footman", "Footman", "Knight", "War_Hound", "Guardian"]
         }
 
         # Callbacks for events

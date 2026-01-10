@@ -1,5 +1,6 @@
 """Battlefield visual and location management."""
 
+import os
 import pygame
 from game_manager import Player
 import cards_database as db
@@ -274,7 +275,11 @@ class Battlefield:
 
 
 class LocationPanel:
-    """Panel showing cards at a specific location."""
+    """Panel showing cards at a specific location with card images."""
+
+    # Card thumbnail size
+    THUMB_WIDTH = 75
+    THUMB_HEIGHT = 105
 
     def __init__(self, screen_width: int, screen_height: int):
         self.screen_width = screen_width
@@ -285,11 +290,101 @@ class LocationPanel:
         self.font = pygame.font.Font(None, 24)
         self.small_font = pygame.font.Font(None, 20)
 
-        # Panel dimensions
-        self.width = 400
-        self.height = 300
+        # Panel dimensions - larger to fit card images
+        self.width = 500
+        self.height = 400
         self.x = (screen_width - self.width) // 2
         self.y = (screen_height - self.height) // 2
+
+        # Cache for card thumbnail images
+        self._card_cache: dict[str, pygame.Surface] = {}
+
+    def _get_card_thumbnail(self, card_id: str, card_info: list) -> pygame.Surface:
+        """Get or create a thumbnail image for a card."""
+        if card_id in self._card_cache:
+            return self._card_cache[card_id]
+
+        # Create thumbnail surface
+        thumb = pygame.Surface((self.THUMB_WIDTH, self.THUMB_HEIGHT), pygame.SRCALPHA)
+
+        # Card background
+        pygame.draw.rect(thumb, (240, 230, 210),
+                        (0, 0, self.THUMB_WIDTH, self.THUMB_HEIGHT), border_radius=5)
+        pygame.draw.rect(thumb, (139, 90, 43),
+                        (0, 0, self.THUMB_WIDTH, self.THUMB_HEIGHT), 2, border_radius=5)
+
+        # Try to load unit image
+        unit_path = os.path.join("resources", "Units", f"{card_id}.png")
+        if not os.path.exists(unit_path):
+            unit_path = os.path.join("resources", "Units", f"{card_id}.jpg")
+
+        if os.path.exists(unit_path):
+            try:
+                unit_img = pygame.image.load(unit_path).convert_alpha()
+                img_rect = unit_img.get_rect()
+                scale = min(
+                    (self.THUMB_WIDTH - 10) / img_rect.width,
+                    (self.THUMB_HEIGHT - 40) / img_rect.height
+                )
+                new_size = (int(img_rect.width * scale), int(img_rect.height * scale))
+                unit_img = pygame.transform.smoothscale(unit_img, new_size)
+                img_x = (self.THUMB_WIDTH - new_size[0]) // 2
+                thumb.blit(unit_img, (img_x, 18))
+            except pygame.error:
+                pass
+
+        # Card name at top
+        if card_info:
+            name = card_info[db.IDX_NAME] if len(card_info) > db.IDX_NAME else card_id
+            attack = card_info[db.IDX_ATTACK] if len(card_info) > db.IDX_ATTACK else 0
+            health = card_info[db.IDX_HEALTH] if len(card_info) > db.IDX_HEALTH else 0
+            cost = card_info[db.IDX_COST] if len(card_info) > db.IDX_COST else 0
+
+            tiny_font = pygame.font.Font(None, 14)
+
+            # Name
+            name_text = tiny_font.render(name[:12], True, (50, 40, 30))
+            name_rect = name_text.get_rect(centerx=self.THUMB_WIDTH // 2, top=3)
+            thumb.blit(name_text, name_rect)
+
+            # Cost circle
+            pygame.draw.circle(thumb, (70, 130, 180), (12, 12), 9)
+            cost_text = tiny_font.render(str(cost), True, (255, 255, 255))
+            cost_rect = cost_text.get_rect(center=(12, 12))
+            thumb.blit(cost_text, cost_rect)
+
+            # Stats at bottom
+            stats_y = self.THUMB_HEIGHT - 14
+            pygame.draw.circle(thumb, (200, 60, 60), (14, stats_y), 8)
+            atk_text = tiny_font.render(str(attack), True, (255, 255, 255))
+            thumb.blit(atk_text, atk_text.get_rect(center=(14, stats_y)))
+
+            pygame.draw.circle(thumb, (60, 160, 60), (self.THUMB_WIDTH - 14, stats_y), 8)
+            hp_text = tiny_font.render(str(health), True, (255, 255, 255))
+            thumb.blit(hp_text, hp_text.get_rect(center=(self.THUMB_WIDTH - 14, stats_y)))
+
+        self._card_cache[card_id] = thumb
+        return thumb
+
+    def _get_card_back_thumbnail(self) -> pygame.Surface:
+        """Get a face-down card thumbnail."""
+        if "_back" in self._card_cache:
+            return self._card_cache["_back"]
+
+        thumb = pygame.Surface((self.THUMB_WIDTH, self.THUMB_HEIGHT), pygame.SRCALPHA)
+        pygame.draw.rect(thumb, (60, 45, 35),
+                        (0, 0, self.THUMB_WIDTH, self.THUMB_HEIGHT), border_radius=5)
+        pygame.draw.rect(thumb, (100, 70, 50),
+                        (0, 0, self.THUMB_WIDTH, self.THUMB_HEIGHT), 2, border_radius=5)
+
+        # Question mark
+        font = pygame.font.Font(None, 30)
+        text = font.render("?", True, (100, 80, 60))
+        text_rect = text.get_rect(center=(self.THUMB_WIDTH // 2, self.THUMB_HEIGHT // 2))
+        thumb.blit(text, text_rect)
+
+        self._card_cache["_back"] = thumb
+        return thumb
 
     def show(self, location: LocationZone, current_player: Player):
         """Show the panel for a location."""
@@ -303,7 +398,7 @@ class LocationPanel:
         self.location = None
 
     def draw(self, screen: pygame.Surface):
-        """Draw the location panel."""
+        """Draw the location panel with card images."""
         if not self.is_visible or not self.location:
             return
 
@@ -356,52 +451,50 @@ class LocationPanel:
         # Your cards section
         own_label_surface = self.small_font.render(own_label, True, own_color)
         screen.blit(own_label_surface, (self.x + 20, self.y + 60))
-        self._draw_cards_list(screen, own_cards, self.x + 20, self.y + 80, own_color)
+        self._draw_cards_row(screen, own_cards, self.x + 20, self.y + 80, True)
 
         # Divider
+        mid_y = self.y + 200
         pygame.draw.line(screen, (100, 90, 80),
-                        (self.x + 20, self.y + 170),
-                        (self.x + self.width - 20, self.y + 170), 1)
+                        (self.x + 20, mid_y),
+                        (self.x + self.width - 20, mid_y), 1)
 
         # Enemy cards section
         opp_label_surface = self.small_font.render(opp_label, True, opp_color)
-        screen.blit(opp_label_surface, (self.x + 20, self.y + 180))
+        screen.blit(opp_label_surface, (self.x + 20, mid_y + 10))
 
         if can_see_opponent:
-            self._draw_cards_list(screen, opp_cards, self.x + 20, self.y + 200, opp_color)
+            self._draw_cards_row(screen, opp_cards, self.x + 20, mid_y + 30, True)
         else:
-            # Can't see enemy cards
-            if len(opp_cards) > 0:
-                hidden_text = self.small_font.render(
-                    f"??? ({len(opp_cards)} hidden cards - need scout or presence)",
-                    True, (150, 150, 150)
-                )
-            else:
-                hidden_text = self.small_font.render(
-                    "No intel (need scout or presence to see)",
-                    True, (150, 150, 150)
-                )
-            screen.blit(hidden_text, (self.x + 20, self.y + 200))
+            self._draw_cards_row(screen, opp_cards, self.x + 20, mid_y + 30, False)
 
-    def _draw_cards_list(self, screen: pygame.Surface, cards: list,
-                         x: int, y: int, color: tuple):
-        """Draw a list of cards."""
+    def _draw_cards_row(self, screen: pygame.Surface, cards: list,
+                        x: int, y: int, visible: bool):
+        """Draw a row of card thumbnails."""
         if not cards:
             no_cards = self.small_font.render("No cards", True, (150, 150, 150))
-            screen.blit(no_cards, (x, y))
+            screen.blit(no_cards, (x, y + 40))
             return
 
+        spacing = 10
         for i, card_data in enumerate(cards):
-            card_id = card_data.get("card_id", "Unknown")
-            card_info = card_data.get("card_info", [])
-            # Show card name and stats
-            if len(card_info) > db.IDX_HEALTH:
-                attack = card_info[db.IDX_ATTACK]
-                health = card_info[db.IDX_HEALTH]
-                text = self.small_font.render(f"- {card_id} ({attack}/{health})", True, color)
+            card_x = x + i * (self.THUMB_WIDTH + spacing)
+
+            # Don't draw if it goes off panel
+            if card_x + self.THUMB_WIDTH > self.x + self.width - 20:
+                # Show overflow indicator
+                more = self.small_font.render(f"+{len(cards) - i} more", True, (150, 150, 150))
+                screen.blit(more, (card_x, y + 40))
+                break
+
+            if visible:
+                card_id = card_data.get("card_id", "Unknown")
+                card_info = card_data.get("card_info", [])
+                thumb = self._get_card_thumbnail(card_id, card_info)
             else:
-                text = self.small_font.render(f"- {card_id}", True, color)
-            screen.blit(text, (x, y + i * 20))
+                thumb = self._get_card_back_thumbnail()
+
+            screen.blit(thumb, (card_x, y))
 
     def handle_click(self, pos: tuple) -> bool:
         """Handle click on panel. Returns True if panel should close."""

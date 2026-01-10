@@ -39,6 +39,7 @@ class Card:
 
         # Visual surfaces
         self.base_surface = None
+        self.back_surface = None
         self.unit_image = None
         self._load_assets()
 
@@ -65,6 +66,41 @@ class Card:
                 self.unit_image = None
 
         self._render_base_surface()
+        self._render_back_surface()
+
+    def _render_back_surface(self):
+        """Render the card back (face-down) surface."""
+        self.back_surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
+
+        # Card back background - dark brownish
+        pygame.draw.rect(self.back_surface, (60, 45, 35),
+                        (0, 0, self.width, self.height), border_radius=8)
+        # Card border
+        pygame.draw.rect(self.back_surface, (100, 70, 50),
+                        (0, 0, self.width, self.height), 3, border_radius=8)
+
+        # Decorative pattern
+        pattern_color = (80, 60, 45)
+        margin = 15
+        inner_rect = (margin, margin, self.width - 2*margin, self.height - 2*margin)
+        pygame.draw.rect(self.back_surface, pattern_color, inner_rect, 2, border_radius=5)
+
+        # Diamond pattern in center
+        cx, cy = self.width // 2, self.height // 2
+        diamond_size = 25
+        points = [
+            (cx, cy - diamond_size),
+            (cx + diamond_size, cy),
+            (cx, cy + diamond_size),
+            (cx - diamond_size, cy)
+        ]
+        pygame.draw.polygon(self.back_surface, pattern_color, points, 2)
+
+        # Question mark to indicate hidden
+        font = pygame.font.Font(None, 40)
+        text = font.render("?", True, (100, 80, 60))
+        text_rect = text.get_rect(center=(cx, cy))
+        self.back_surface.blit(text, text_rect)
 
     def _render_base_surface(self):
         """Render the base card surface."""
@@ -131,19 +167,28 @@ class Card:
 
         self.scale += (self.target_scale - self.scale) * lerp_speed
 
-    def draw(self, screen: pygame.Surface):
-        """Draw the card to the screen."""
-        if self.base_surface is None:
+    def draw(self, screen: pygame.Surface, face_down: bool = False):
+        """Draw the card to the screen.
+
+        Args:
+            screen: The surface to draw on
+            face_down: If True, draw the card back instead of front
+        """
+        surface = self.back_surface if face_down else self.base_surface
+        if surface is None:
             return
 
         # Scale the surface
         scaled_width = int(self.width * self.scale)
         scaled_height = int(self.height * self.scale)
 
-        if self.angle != 0:
-            rotated = pygame.transform.rotozoom(self.base_surface, self.angle, self.scale)
+        # For face-down cards, rotate 180 degrees (upside down)
+        draw_angle = self.angle + 180 if face_down else self.angle
+
+        if draw_angle != 0:
+            rotated = pygame.transform.rotozoom(surface, draw_angle, self.scale)
         else:
-            rotated = pygame.transform.smoothscale(self.base_surface, (scaled_width, scaled_height))
+            rotated = pygame.transform.smoothscale(surface, (scaled_width, scaled_height))
 
         # Draw centered at position
         rect = rotated.get_rect(center=(self.x, self.y))

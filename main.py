@@ -271,15 +271,17 @@ class Game:
         # Draw battlefield
         self.battlefield.draw(self.screen)
 
-        # Draw both hands (opponent hand shown smaller/hidden)
+        # Draw both hands (opponent hand shown face-down)
         if self.game_manager.current_player == Player.ATTACKER:
-            # Draw defender hand (opponent) - could be hidden in future
-            self.defender_hand.draw(self.screen)
-            # Draw attacker hand (current player)
-            self.attacker_hand.draw(self.screen)
+            # Draw defender hand (opponent) - face down
+            self.defender_hand.draw(self.screen, face_down=True)
+            # Draw attacker hand (current player) - face up
+            self.attacker_hand.draw(self.screen, face_down=False)
         else:
-            self.attacker_hand.draw(self.screen)
-            self.defender_hand.draw(self.screen)
+            # Draw attacker hand (opponent) - face down
+            self.attacker_hand.draw(self.screen, face_down=True)
+            # Draw defender hand (current player) - face up
+            self.defender_hand.draw(self.screen, face_down=False)
 
         # Draw UI
         self.turn_ui.draw(self.screen)
