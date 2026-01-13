@@ -14,15 +14,15 @@ class HandManager:
         self.is_bottom = is_bottom
         self.cards: list[Card] = []
 
-        # Oval parameters - adjusted so cards are visible
+        # Oval parameters - adjusted so full cards are visible
         self.center_x = screen_width // 2
         if is_bottom:
-            self.center_y = screen_height + 80  # Cards visible at bottom
+            self.center_y = screen_height + 50  # Oval center just below screen
         else:
-            self.center_y = -80  # Cards visible at top
+            self.center_y = -50  # Oval center just above screen
 
-        self.radius_x = screen_width * 0.38
-        self.radius_y = 100
+        self.radius_x = screen_width * 0.35
+        self.radius_y = 180  # Cards curve up from center
 
         self.focused_card: Card | None = None
         self.dragging_card: Card | None = None
@@ -145,11 +145,12 @@ class HandManager:
         self.center_x = screen_width // 2
 
         if self.is_bottom:
-            self.center_y = screen_height + 80
+            self.center_y = screen_height + 50
         else:
-            self.center_y = -80
+            self.center_y = -50
 
-        self.radius_x = screen_width * 0.38
+        self.radius_x = screen_width * 0.35
+        self.radius_y = 180
         self._reorganize_hand()
 
     def get_card_at(self, pos: tuple) -> Card | None:

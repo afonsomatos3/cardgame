@@ -185,6 +185,9 @@ class Game:
                 loc.attacker_cards = manager_atk.copy()
                 loc.defender_cards = manager_def.copy()
 
+        # Sync capture state for area control display
+        self.battlefield.sync_capture_state(self.game_manager)
+
     def _on_card_arrived(self, card_id: str, card_info: list, player: Player):
         """Callback when a card arrives in hand."""
         card = Card(card_id)
@@ -452,6 +455,9 @@ class Game:
             player = self.game_manager.current_player
             reinforcements = self.game_manager.get_hand_reinforcements(player)
             self.reinforcement_ui.update(reinforcements)
+
+            # Sync battlefield state (including capture progress)
+            self._sync_battlefield_from_manager()
 
     def draw(self):
         """Draw the game."""

@@ -19,7 +19,7 @@ class LocationZone:
     """A zone on the battlefield where cards can be placed."""
 
     def __init__(self, name: str, x: int, y: int, width: int, height: int,
-                 color: tuple, blocked_by: list = None):
+                 color: tuple, blocked_by: list = None, is_capturable: bool = False):
         self.name = name
         self.x = x
         self.y = y
@@ -32,6 +32,14 @@ class LocationZone:
         # Cards placed at this location
         self.attacker_cards: list = []
         self.defender_cards: list = []
+
+        # Area control state
+        self.is_capturable = is_capturable
+        self.controller: Player | None = None
+        self.capture_power_attacker = 0
+        self.capture_power_defender = 0
+        self.capture_threshold_attacker = 5
+        self.capture_threshold_defender = 5
 
     def get_rect(self) -> pygame.Rect:
         """Get the zone's rectangle."""
@@ -74,16 +82,31 @@ class LocationZone:
         """Draw the location zone."""
         rect = self.get_rect()
 
+        # Determine color based on control state
+        if self.controller == Player.ATTACKER:
+            base_color = (180, 80, 80)  # Red for attacker controlled
+        elif self.controller == Player.DEFENDER:
+            base_color = (80, 80, 180)  # Blue for defender controlled
+        else:
+            base_color = (100, 100, 100)  # Grey for neutral/contested
+
         # Background with transparency
         surface = pygame.Surface((self.width, self.height), pygame.SRCALPHA)
         alpha = 180 if self.is_hovered else 140
-        color_with_alpha = (*self.color, alpha)
+        color_with_alpha = (*base_color, alpha)
         pygame.draw.rect(surface, color_with_alpha, (0, 0, self.width, self.height),
                         border_radius=10)
         screen.blit(surface, (self.x, self.y))
 
-        # Border
-        border_color = (255, 255, 255) if self.is_hovered else (100, 100, 100)
+        # Border - colored based on control
+        if self.is_hovered:
+            border_color = (255, 255, 255)
+        elif self.controller == Player.ATTACKER:
+            border_color = (255, 120, 120)
+        elif self.controller == Player.DEFENDER:
+            border_color = (120, 120, 255)
+        else:
+            border_color = (150, 150, 150)
         pygame.draw.rect(screen, border_color, rect, 2, border_radius=10)
 
         # Location name
@@ -141,6 +164,65 @@ class LocationZone:
                 center=(self.x + self.width // 2, self.y + self.height - 10)
             )
             screen.blit(blocked_text, blocked_rect)
+
+        # Draw capture progress for capturable locations (only if player has presence)
+        if self.is_capturable:
+            can_see_progress = current_player is None or self.player_has_presence(current_player)
+            self._draw_capture_progress(screen, small_font, current_player, can_see_progress)
+
+    def _draw_capture_progress(self, screen: pygame.Surface, font: pygame.font.Font,
+                               current_player: Player = None, can_see: bool = True):
+        """Draw capture progress bars for this location."""
+        # If already controlled, show control indicator (always visible)
+        if self.controller is not None:
+            control_color = (255, 100, 100) if self.controller == Player.ATTACKER else (100, 100, 255)
+            control_text = "ATK" if self.controller == Player.ATTACKER else "DEF"
+            indicator = font.render(f"[{control_text}]", True, control_color)
+            indicator_rect = indicator.get_rect(
+                center=(self.x + self.width // 2, self.y + self.height - 22)
+            )
+            screen.blit(indicator, indicator_rect)
+            return
+
+        # If player can't see progress (no troops there), show "???"
+        if not can_see:
+            unknown = font.render("[ ? / ? ]", True, (150, 150, 150))
+            unknown_rect = unknown.get_rect(
+                center=(self.x + self.width // 2, self.y + self.height - 22)
+            )
+            screen.blit(unknown, unknown_rect)
+            return
+
+        # Draw progress bars for uncaptured location
+        bar_width = self.width - 20
+        bar_height = 6
+        bar_x = self.x + 10
+        bar_y = self.y + self.height - 28
+
+        # Calculate progress (capped at 100%)
+        atk_progress = min(1.0, self.capture_power_attacker / max(1, self.capture_threshold_attacker))
+        def_progress = min(1.0, self.capture_power_defender / max(1, self.capture_threshold_defender))
+
+        # Attacker progress bar (red)
+        pygame.draw.rect(screen, (80, 40, 40), (bar_x, bar_y, bar_width, bar_height), border_radius=3)
+        if atk_progress > 0:
+            pygame.draw.rect(screen, (255, 100, 100),
+                           (bar_x, bar_y, int(bar_width * atk_progress), bar_height), border_radius=3)
+
+        # Defender progress bar (blue)
+        pygame.draw.rect(screen, (40, 40, 80), (bar_x, bar_y + 8, bar_width, bar_height), border_radius=3)
+        if def_progress > 0:
+            pygame.draw.rect(screen, (100, 100, 255),
+                           (bar_x, bar_y + 8, int(bar_width * def_progress), bar_height), border_radius=3)
+
+        # Show power/threshold text
+        micro_font = pygame.font.Font(None, 14)
+        atk_text = micro_font.render(f"{self.capture_power_attacker}/{self.capture_threshold_attacker}",
+                                     True, (255, 150, 150))
+        def_text = micro_font.render(f"{self.capture_power_defender}/{self.capture_threshold_defender}",
+                                     True, (150, 150, 255))
+        screen.blit(atk_text, (bar_x + bar_width + 2, bar_y - 2))
+        screen.blit(def_text, (bar_x + bar_width + 2, bar_y + 6))
 
 
 class Battlefield:
@@ -233,15 +315,16 @@ class Battlefield:
             else:  # 3 items
                 return center_x + (pos - 1) * h_spacing
 
-        # Location colors and blocked status
+        # Location colors, blocked status, and capturable flag
+        # Format: (color, blocked_by, is_capturable)
         loc_props = {
-            "Camp": ((180, 100, 80), ["Defender"]),
-            "Forest": ((34, 100, 34), ["Defender"]),
-            "Gate": ((100, 80, 60), []),
-            "Walls": ((128, 128, 128), []),
-            "Sewers": ((60, 60, 80), []),
-            "Courtyard": ((160, 140, 100), ["Attacker"]),
-            "Keep": ((139, 90, 43), ["Attacker"]),
+            "Camp": ((180, 100, 80), ["Defender"], False),
+            "Forest": ((34, 100, 34), ["Defender"], False),
+            "Gate": ((100, 80, 60), [], True),      # Capturable
+            "Walls": ((128, 128, 128), [], True),   # Capturable
+            "Sewers": ((60, 60, 80), [], True),     # Capturable
+            "Courtyard": ((160, 140, 100), ["Attacker"], False),
+            "Keep": ((139, 90, 43), ["Attacker"], False),
         }
 
         self.locations.clear()
@@ -254,12 +337,12 @@ class Battlefield:
             x = get_x_for_row(row, pos, num_in_row) - zone_width // 2
             y = row_ys[row] - zone_height // 2
 
-            color, blocked = loc_props[name]
+            color, blocked, is_capturable = loc_props[name]
 
             self.locations[name] = LocationZone(
                 name, int(x), int(y),
                 zone_width, zone_height,
-                color, blocked
+                color, blocked, is_capturable
             )
 
     def set_current_player(self, player: Player):
@@ -446,6 +529,20 @@ class Battlefield:
         card = cards.pop(card_index)
         dest_cards.append(card)
         return True
+
+    def sync_capture_state(self, game_manager):
+        """Sync capture state from GameManager to location zones."""
+        for name, location in self.locations.items():
+            # Always sync controller (for color display)
+            location.controller = game_manager.location_control.get(name)
+
+            # Sync capture progress for capturable locations
+            if location.is_capturable:
+                info = game_manager.get_location_capture_info(name)
+                location.capture_power_attacker = info.get("attacker_power", 0)
+                location.capture_power_defender = info.get("defender_power", 0)
+                location.capture_threshold_attacker = info.get("attacker_threshold", 5)
+                location.capture_threshold_defender = info.get("defender_threshold", 5)
 
 
 class LocationPanel:
@@ -714,11 +811,24 @@ class LocationPanel:
             if visible:
                 card_id = card_data.get("card_id", "Unknown")
                 card_info = card_data.get("card_info", [])
+                is_tapped = card_data.get("is_tapped", False)
                 thumb = self._get_card_thumbnail(card_id, card_info)
             else:
+                is_tapped = False
                 thumb = self._get_card_back_thumbnail()
 
             screen.blit(thumb, (card_x, y))
+
+            # Draw tapped indicator for visible cards
+            if visible and is_tapped:
+                tapped_overlay = pygame.Surface((self.THUMB_WIDTH, self.THUMB_HEIGHT), pygame.SRCALPHA)
+                pygame.draw.rect(tapped_overlay, (80, 80, 80, 150),
+                               (0, 0, self.THUMB_WIDTH, self.THUMB_HEIGHT), border_radius=5)
+                screen.blit(tapped_overlay, (card_x, y))
+                tapped_font = pygame.font.Font(None, 16)
+                tapped_text = tapped_font.render("TAPPED", True, (255, 200, 100))
+                text_rect = tapped_text.get_rect(center=(card_x + self.THUMB_WIDTH // 2, y + self.THUMB_HEIGHT // 2))
+                screen.blit(tapped_text, text_rect)
 
     def _draw_own_cards_row(self, screen: pygame.Surface, cards: list, x: int, y: int):
         """Draw a row of own card thumbnails with selection support."""
@@ -739,6 +849,7 @@ class LocationPanel:
 
             card_id = card_data.get("card_id", "Unknown")
             card_info = card_data.get("card_info", [])
+            is_tapped = card_data.get("is_tapped", False)
             thumb = self._get_card_thumbnail(card_id, card_info)
 
             # Track card rect for click detection
@@ -753,6 +864,18 @@ class LocationPanel:
                 screen.blit(highlight, (card_x - 3, y - 3))
 
             screen.blit(thumb, (card_x, y))
+
+            # Draw tapped indicator (gray overlay with "TAPPED" text)
+            if is_tapped:
+                tapped_overlay = pygame.Surface((self.THUMB_WIDTH, self.THUMB_HEIGHT), pygame.SRCALPHA)
+                pygame.draw.rect(tapped_overlay, (80, 80, 80, 150),
+                               (0, 0, self.THUMB_WIDTH, self.THUMB_HEIGHT), border_radius=5)
+                screen.blit(tapped_overlay, (card_x, y))
+                # Draw "TAPPED" text
+                tapped_font = pygame.font.Font(None, 16)
+                tapped_text = tapped_font.render("TAPPED", True, (255, 200, 100))
+                text_rect = tapped_text.get_rect(center=(card_x + self.THUMB_WIDTH // 2, y + self.THUMB_HEIGHT // 2))
+                screen.blit(tapped_text, text_rect)
 
     def _draw_movement_section(self, screen: pygame.Surface, own_cards: list, y: int):
         """Draw the movement section with destination buttons."""

@@ -11,6 +11,13 @@ class Player(Enum):
     DEFENDER = 1
 
 
+class GamePhase(Enum):
+    MAIN = 0
+    DECLARE_ATTACKERS = 1
+    DECLARE_BLOCKERS = 2
+    COMBAT_DAMAGE = 3
+
+
 class CombatResult:
     """Stores the result of combat at a location."""
 
@@ -77,6 +84,36 @@ class GameManager:
         self.on_turn_changed: Callable | None = None
         self.on_card_placed: Callable | None = None
         self.on_card_arrived: Callable | None = None
+        self.on_location_captured: Callable | None = None
+
+        # ========== AREA CONTROL SYSTEM ==========
+        self.CAPTURABLE_LOCATIONS = ["Gate", "Walls", "Sewers"]
+        self.CAPTURE_THRESHOLD = 5
+
+        # Location control state: {location: Player or None}
+        self.location_control: dict[str, Player | None] = {
+            "Camp": Player.ATTACKER,
+            "Forest": Player.ATTACKER,
+            "Gate": None,
+            "Walls": None,
+            "Sewers": None,
+            "Courtyard": Player.DEFENDER,
+            "Keep": Player.DEFENDER,
+        }
+
+        # Accumulated capture power: {location: {"attacker": int, "defender": int}}
+        self.capture_power: dict[str, dict[str, int]] = {
+            loc: {"attacker": 0, "defender": 0} for loc in self.LOCATIONS
+        }
+
+        # Bonus card draws from controlled areas
+        self.attacker_bonus_draws = 0
+        self.defender_bonus_draws = 0
+
+        # ========== TAPPED COMBAT SYSTEM ==========
+        self.combat_phase = GamePhase.MAIN
+        self.pending_attackers: list[dict] = []  # [{location, card_index, player, card}]
+        self.pending_blocks: dict[int, list[int]] = {}  # attacker_idx -> [blocker_indices]
 
         self._init_battlefield()
 
@@ -156,7 +193,9 @@ class GameManager:
 
         card_entry = {
             "card_id": card_id,
-            "card_info": card_info
+            "card_info": card_info,
+            "is_tapped": False,
+            "current_health": card_info[db.IDX_HEALTH]
         }
 
         player_key = "attacker" if player == Player.ATTACKER else "defender"
@@ -201,6 +240,8 @@ class GameManager:
             # Reset defender's flags for their new phase
             self.defender_has_drawn = False
             self.defender_has_moved = False
+            # Untap defender's cards at start of their turn
+            self.untap_cards(Player.DEFENDER)
             print("Defender's phase begins")
             if self.on_turn_changed:
                 self.on_turn_changed(self.current_turn, "Defender")
@@ -211,6 +252,10 @@ class GameManager:
                 print(f"=== Both players passed - processing turn {self.current_turn} ===")
                 self.process_turn()
 
+                # Accumulate capture power and check for captures
+                self.accumulate_capture_power()
+                self.check_captures()
+
                 self.attacker_has_passed = False
                 self.defender_has_passed = False
                 # Reset all flags for new turn
@@ -220,6 +265,9 @@ class GameManager:
                 self.defender_has_moved = False
                 self.current_turn += 1
                 self.current_player = Player.ATTACKER
+
+                # Untap attacker's cards at start of their turn
+                self.untap_cards(Player.ATTACKER)
 
                 print(f"=== Turn {self.current_turn} begins - Attacker's phase ===")
                 if self.on_turn_changed:
@@ -508,3 +556,210 @@ class GameManager:
             return (current_health, max_health)
 
         return None
+
+    # ========== TAPPED COMBAT METHODS ==========
+
+    def untap_cards(self, player: Player):
+        """Untap all cards belonging to a player at start of their turn."""
+        player_key = "attacker" if player == Player.ATTACKER else "defender"
+        for location in self.LOCATIONS:
+            for card in self.battlefield_cards[location][player_key]:
+                card["is_tapped"] = False
+
+    def tap_card(self, location: str, card_index: int, player: Player) -> bool:
+        """Tap a card (mark as having attacked)."""
+        player_key = "attacker" if player == Player.ATTACKER else "defender"
+        cards = self.battlefield_cards[location][player_key]
+        if 0 <= card_index < len(cards):
+            cards[card_index]["is_tapped"] = True
+            return True
+        return False
+
+    def get_untapped_cards(self, location: str, player: Player) -> list[tuple[int, dict]]:
+        """Get all untapped cards at a location for a player.
+
+        Returns list of (index, card) tuples.
+        """
+        player_key = "attacker" if player == Player.ATTACKER else "defender"
+        cards = self.battlefield_cards[location][player_key]
+        return [(i, c) for i, c in enumerate(cards) if not c.get("is_tapped", False)]
+
+    def declare_attacker(self, location: str, card_index: int, player: Player) -> bool:
+        """Declare a card as an attacker. Taps the card."""
+        player_key = "attacker" if player == Player.ATTACKER else "defender"
+        cards = self.battlefield_cards[location][player_key]
+
+        if 0 <= card_index < len(cards):
+            card = cards[card_index]
+            if card.get("is_tapped", False):
+                print(f"Card {card['card_id']} is already tapped!")
+                return False
+
+            card["is_tapped"] = True
+            self.pending_attackers.append({
+                "location": location,
+                "card_index": card_index,
+                "player": player,
+                "card": card
+            })
+            print(f"{card['card_id']} declared as attacker at {location}")
+            return True
+        return False
+
+    def declare_blocker(self, attacker_idx: int, location: str,
+                        blocker_index: int, player: Player) -> bool:
+        """Assign a blocker to an attacker."""
+        if attacker_idx >= len(self.pending_attackers):
+            return False
+
+        attacker = self.pending_attackers[attacker_idx]
+        if attacker["location"] != location:
+            print("Blocker must be at same location as attacker!")
+            return False
+
+        player_key = "attacker" if player == Player.ATTACKER else "defender"
+        cards = self.battlefield_cards[location][player_key]
+
+        if 0 <= blocker_index < len(cards):
+            blocker = cards[blocker_index]
+            if blocker.get("is_tapped", False):
+                print(f"Card {blocker['card_id']} is tapped and cannot block!")
+                return False
+
+            if attacker_idx not in self.pending_blocks:
+                self.pending_blocks[attacker_idx] = []
+            self.pending_blocks[attacker_idx].append(blocker_index)
+            print(f"{blocker['card_id']} blocking {attacker['card']['card_id']}")
+            return True
+        return False
+
+    def clear_combat_state(self):
+        """Clear pending attackers and blockers."""
+        self.pending_attackers = []
+        self.pending_blocks = {}
+        self.combat_phase = GamePhase.MAIN
+
+    # ========== AREA CONTROL METHODS ==========
+
+    def get_max_draws(self, player: Player) -> int:
+        """Get max draws per turn for a player (base 1 + controlled capturable areas)."""
+        base = 1
+        bonus = self.attacker_bonus_draws if player == Player.ATTACKER else self.defender_bonus_draws
+        return base + bonus
+
+    def get_draws_remaining(self, player: Player) -> int:
+        """Get remaining draws for this phase."""
+        max_draws = self.get_max_draws(player)
+        if player == Player.ATTACKER:
+            drawn = 1 if self.attacker_has_drawn else 0
+        else:
+            drawn = 1 if self.defender_has_drawn else 0
+        return max(0, max_draws - drawn)
+
+    def accumulate_capture_power(self):
+        """Add attack power to capture progress at each capturable location."""
+        for location in self.CAPTURABLE_LOCATIONS:
+            if self.location_control[location] is not None:
+                continue  # Already captured, skip
+
+            atk_cards = self.battlefield_cards[location]["attacker"]
+            def_cards = self.battlefield_cards[location]["defender"]
+
+            # Calculate power contribution (sum of attack values)
+            atk_power = sum(card["card_info"][db.IDX_ATTACK] for card in atk_cards)
+            def_power = sum(card["card_info"][db.IDX_ATTACK] for card in def_cards)
+
+            self.capture_power[location]["attacker"] += atk_power
+            self.capture_power[location]["defender"] += def_power
+
+            if atk_power > 0 or def_power > 0:
+                print(f"[CAPTURE] {location}: Attacker +{atk_power} (total: {self.capture_power[location]['attacker']}), "
+                      f"Defender +{def_power} (total: {self.capture_power[location]['defender']})")
+
+    def get_capture_threshold(self, location: str, for_player: Player) -> int:
+        """Get the capture threshold for a player at a location.
+
+        Threshold = base (5) + sum of enemy card health if enemies present.
+        """
+        threshold = self.CAPTURE_THRESHOLD
+
+        if for_player == Player.ATTACKER:
+            enemy_cards = self.battlefield_cards[location]["defender"]
+        else:
+            enemy_cards = self.battlefield_cards[location]["attacker"]
+
+        # Add enemy health to threshold
+        for card in enemy_cards:
+            threshold += card.get("current_health", card["card_info"][db.IDX_HEALTH])
+
+        return threshold
+
+    def check_captures(self) -> list[tuple[str, Player]]:
+        """Check if any locations are captured.
+
+        Returns list of (location, new_controller) tuples.
+        """
+        captures = []
+
+        for location in self.CAPTURABLE_LOCATIONS:
+            if self.location_control[location] is not None:
+                continue  # Already controlled
+
+            atk_cards = self.battlefield_cards[location]["attacker"]
+            def_cards = self.battlefield_cards[location]["defender"]
+
+            atk_threshold = self.get_capture_threshold(location, Player.ATTACKER)
+            def_threshold = self.get_capture_threshold(location, Player.DEFENDER)
+
+            atk_power = self.capture_power[location]["attacker"]
+            def_power = self.capture_power[location]["defender"]
+
+            # Check for attacker capture
+            if atk_cards and atk_power >= atk_threshold:
+                self.location_control[location] = Player.ATTACKER
+                captures.append((location, Player.ATTACKER))
+                self._on_location_captured(location, Player.ATTACKER)
+                print(f"[CAPTURE] Attacker captured {location}!")
+            # Check for defender capture
+            elif def_cards and def_power >= def_threshold:
+                self.location_control[location] = Player.DEFENDER
+                captures.append((location, Player.DEFENDER))
+                self._on_location_captured(location, Player.DEFENDER)
+                print(f"[CAPTURE] Defender captured {location}!")
+
+        return captures
+
+    def _on_location_captured(self, location: str, player: Player):
+        """Handle capture side effects."""
+        # Update bonus draws
+        if player == Player.ATTACKER:
+            self.attacker_bonus_draws += 1
+        else:
+            self.defender_bonus_draws += 1
+
+        # Reset capture power for this location
+        self.capture_power[location] = {"attacker": 0, "defender": 0}
+
+        # Callback for UI notification
+        if self.on_location_captured:
+            self.on_location_captured(location, player)
+
+    def get_location_capture_info(self, location: str) -> dict:
+        """Get capture information for a location.
+
+        Returns dict with power, threshold, and control info.
+        """
+        if location not in self.CAPTURABLE_LOCATIONS:
+            return {
+                "capturable": False,
+                "controller": self.location_control.get(location)
+            }
+
+        return {
+            "capturable": True,
+            "controller": self.location_control[location],
+            "attacker_power": self.capture_power[location]["attacker"],
+            "defender_power": self.capture_power[location]["defender"],
+            "attacker_threshold": self.get_capture_threshold(location, Player.ATTACKER),
+            "defender_threshold": self.get_capture_threshold(location, Player.DEFENDER),
+        }

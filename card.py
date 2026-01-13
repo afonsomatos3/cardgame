@@ -4,9 +4,9 @@ import pygame
 import os
 import cards_database as db
 
-# Card dimensions (base size at 1280x720)
-BASE_CARD_WIDTH = 240
-BASE_CARD_HEIGHT = 336
+# Card dimensions (base size at 1280x720) - smaller for better hand visibility
+BASE_CARD_WIDTH = 160
+BASE_CARD_HEIGHT = 224
 CARD_FOCUS_SCALE = 1.15
 
 # These will be scaled based on screen size
