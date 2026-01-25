@@ -4,7 +4,7 @@ import pygame
 
 
 class Button:
-    """A simple clickable button."""
+    """A simple clickable button with animation support."""
 
     def __init__(self, x: int, y: int, width: int, height: int,
                  text: str, color: tuple = (70, 130, 180),
@@ -16,8 +16,12 @@ class Button:
         self.text = text
         self.color = color
         self.hover_color = tuple(min(c + 30, 255) for c in color)
+        self.press_color = tuple(max(c - 30, 0) for c in color)
         self.text_color = text_color
         self.is_hovered = False
+        self.is_pressed = False
+        self.press_time = 0
+        self.press_duration = 0.1  # seconds
         self.font = pygame.font.Font(None, 28)
 
     def get_rect(self) -> pygame.Rect:
@@ -30,8 +34,20 @@ class Button:
 
     def draw(self, screen: pygame.Surface):
         """Draw the button."""
-        color = self.hover_color if self.is_hovered else self.color
+        if self.is_pressed:
+            color = self.press_color
+        elif self.is_hovered:
+            color = self.hover_color
+        else:
+            color = self.color
+
         rect = self.get_rect()
+
+        # Scale down slightly when pressed
+        if self.is_pressed:
+            shrink = 2
+            rect = pygame.Rect(rect.x + shrink, rect.y + shrink,
+                              rect.width - shrink * 2, rect.height - shrink * 2)
 
         pygame.draw.rect(screen, color, rect, border_radius=8)
         pygame.draw.rect(screen, (50, 50, 50), rect, 2, border_radius=8)
@@ -39,6 +55,18 @@ class Button:
         text_surface = self.font.render(self.text, True, self.text_color)
         text_rect = text_surface.get_rect(center=rect.center)
         screen.blit(text_surface, text_rect)
+
+    def update(self, dt: float):
+        """Update button animation state."""
+        if self.is_pressed:
+            self.press_time += dt
+            if self.press_time >= self.press_duration:
+                self.is_pressed = False
+
+    def press(self):
+        """Trigger press animation."""
+        self.is_pressed = True
+        self.press_time = 0
 
     def handle_mouse_motion(self, pos: tuple):
         """Handle mouse motion for hover effect."""
@@ -66,6 +94,10 @@ class TurnUI:
         self.turn = turn
         self.current_player = current_player
 
+    def update_animation(self, dt: float):
+        """Update UI animations."""
+        self.end_turn_button.update(dt)
+
     def draw(self, screen: pygame.Surface):
         """Draw the turn UI."""
         # Background panel - bigger
@@ -91,7 +123,10 @@ class TurnUI:
 
     def handle_click(self, pos: tuple) -> bool:
         """Handle click, returns True if end turn button was clicked."""
-        return self.end_turn_button.contains_point(pos)
+        if self.end_turn_button.contains_point(pos):
+            self.end_turn_button.press()
+            return True
+        return False
 
     def resize(self, screen_width: int):
         """Handle screen resize."""
@@ -165,46 +200,188 @@ class DeckUI:
 
 
 class DrawMenu:
-    """Menu for selecting cards to draw from deck."""
+    """Menu for selecting cards to draw from deck with visual card display."""
+
+    # Card dimensions for the menu
+    CARD_WIDTH = 120
+    CARD_HEIGHT = 168
+    CARDS_PER_ROW = 3
 
     def __init__(self, screen_width: int, screen_height: int):
         self.screen_width = screen_width
         self.screen_height = screen_height
         self.is_visible = False
         self.available_cards: list[str] = []
-        self.card_buttons: list[tuple[pygame.Rect, str]] = []
-        self.font = pygame.font.Font(None, 24)
-        self.small_font = pygame.font.Font(None, 20)
+        self.card_rects: list[tuple[pygame.Rect, str]] = []
+        self.font = pygame.font.Font(None, 28)
+        self.small_font = pygame.font.Font(None, 18)
+        self.tiny_font = pygame.font.Font(None, 14)
 
-        self.width = 350
-        self.height = 400
+        # Larger panel to fit cards
+        self.width = 450
+        self.height = 480
         self.x = (screen_width - self.width) // 2
         self.y = (screen_height - self.height) // 2
+
+        # Scroll offset for many cards
+        self.scroll_offset = 0
+        self.max_visible_rows = 2
+
+        # Card image cache
+        self._card_cache: dict[str, pygame.Surface] = {}
+
+    def _render_card(self, card_id: str) -> pygame.Surface:
+        """Render a card image for the menu."""
+        if card_id in self._card_cache:
+            return self._card_cache[card_id]
+
+        import os
+        import cards_database as db
+
+        surf = pygame.Surface((self.CARD_WIDTH, self.CARD_HEIGHT), pygame.SRCALPHA)
+
+        # Card background
+        pygame.draw.rect(surf, (240, 230, 210),
+                        (0, 0, self.CARD_WIDTH, self.CARD_HEIGHT), border_radius=6)
+        pygame.draw.rect(surf, (139, 90, 43),
+                        (0, 0, self.CARD_WIDTH, self.CARD_HEIGHT), 2, border_radius=6)
+
+        # Try to load unit image
+        unit_path = os.path.join("resources", "Units", f"{card_id}.png")
+        if not os.path.exists(unit_path):
+            unit_path = os.path.join("resources", "Units", f"{card_id}.jpg")
+
+        if os.path.exists(unit_path):
+            try:
+                unit_img = pygame.image.load(unit_path).convert_alpha()
+                img_rect = unit_img.get_rect()
+                scale = min(
+                    (self.CARD_WIDTH - 10) / img_rect.width,
+                    (self.CARD_HEIGHT - 80) / img_rect.height
+                )
+                new_size = (int(img_rect.width * scale), int(img_rect.height * scale))
+                unit_img = pygame.transform.smoothscale(unit_img, new_size)
+                img_x = (self.CARD_WIDTH - new_size[0]) // 2
+                surf.blit(unit_img, (img_x, 32))  # Adjusted for type line
+            except pygame.error:
+                pass
+
+        # Card info
+        card_info = db.get_card_info(card_id)
+        if card_info:
+            name = card_info[db.IDX_NAME]
+            attack = card_info[db.IDX_ATTACK]
+            health = card_info[db.IDX_HEALTH]
+            cost = card_info[db.IDX_COST]
+            subtype = card_info[db.IDX_SUBTYPE] if len(card_info) > db.IDX_SUBTYPE else ""
+            species = card_info[db.IDX_SPECIES] if len(card_info) > db.IDX_SPECIES else ""
+            special = card_info[db.IDX_SPECIAL] if len(card_info) > db.IDX_SPECIAL else ""
+
+            # Name at top
+            name_text = self.small_font.render(name[:14], True, (50, 40, 30))
+            name_rect = name_text.get_rect(centerx=self.CARD_WIDTH // 2, top=2)
+            surf.blit(name_text, name_rect)
+
+            # Subtype and Species below name
+            type_parts = []
+            if subtype:
+                type_parts.append(subtype.replace(",", " "))
+            if species:
+                type_parts.append(species)
+            if type_parts:
+                type_text = " - ".join(type_parts)
+                # Truncate if too long
+                if self.tiny_font.size(type_text)[0] > self.CARD_WIDTH - 10:
+                    type_text = type_text[:16] + "..."
+                type_surface = self.tiny_font.render(type_text, True, (100, 80, 60))
+                type_rect = type_surface.get_rect(centerx=self.CARD_WIDTH // 2, top=18)
+                surf.blit(type_surface, type_rect)
+
+            # Cost circle (top-left)
+            pygame.draw.circle(surf, (70, 130, 180), (15, 15), 12)
+            pygame.draw.circle(surf, (50, 100, 150), (15, 15), 12, 2)
+            cost_text = self.small_font.render(str(cost), True, (255, 255, 255))
+            surf.blit(cost_text, cost_text.get_rect(center=(15, 15)))
+
+            # Stats at bottom
+            stats_y = self.CARD_HEIGHT - 18
+
+            # Attack (left)
+            pygame.draw.circle(surf, (200, 60, 60), (18, stats_y), 12)
+            pygame.draw.circle(surf, (150, 40, 40), (18, stats_y), 12, 2)
+            atk_text = self.small_font.render(str(attack), True, (255, 255, 255))
+            surf.blit(atk_text, atk_text.get_rect(center=(18, stats_y)))
+
+            # Health (right)
+            pygame.draw.circle(surf, (60, 160, 60), (self.CARD_WIDTH - 18, stats_y), 12)
+            pygame.draw.circle(surf, (40, 120, 40), (self.CARD_WIDTH - 18, stats_y), 12, 2)
+            hp_text = self.small_font.render(str(health), True, (255, 255, 255))
+            surf.blit(hp_text, hp_text.get_rect(center=(self.CARD_WIDTH - 18, stats_y)))
+
+            # Special ability text (if any)
+            if special:
+                special_y = self.CARD_HEIGHT - 55
+                # Background for special text
+                special_bg = pygame.Surface((self.CARD_WIDTH - 8, 35), pygame.SRCALPHA)
+                pygame.draw.rect(special_bg, (240, 220, 180, 220), (0, 0, self.CARD_WIDTH - 8, 35), border_radius=3)
+                surf.blit(special_bg, (4, special_y))
+
+                # Wrap text
+                words = special.split()
+                lines = []
+                current_line = []
+                for word in words:
+                    test_line = ' '.join(current_line + [word])
+                    if self.tiny_font.size(test_line)[0] < self.CARD_WIDTH - 12:
+                        current_line.append(word)
+                    else:
+                        if current_line:
+                            lines.append(' '.join(current_line))
+                        current_line = [word]
+                if current_line:
+                    lines.append(' '.join(current_line))
+
+                for i, line in enumerate(lines[:2]):  # Max 2 lines
+                    special_text = self.tiny_font.render(line, True, (50, 40, 30))
+                    text_rect = special_text.get_rect(centerx=self.CARD_WIDTH // 2, y=special_y + 3 + i * 14)
+                    surf.blit(special_text, text_rect)
+
+        self._card_cache[card_id] = surf
+        return surf
 
     def show(self, available_cards: list[str]):
         """Show the draw menu with available cards."""
         self.available_cards = available_cards
         self.is_visible = True
-        self._create_buttons()
+        self.scroll_offset = 0
+        self._update_card_rects()
 
     def hide(self):
         """Hide the menu."""
         self.is_visible = False
 
-    def _create_buttons(self):
-        """Create buttons for each card."""
-        self.card_buttons = []
-        button_height = 40
-        spacing = 5
-        start_y = self.y + 50
+    def _update_card_rects(self):
+        """Update card positions for current scroll offset."""
+        self.card_rects = []
+        spacing = 15
+        start_x = self.x + 30
+        start_y = self.y + 60
 
         for i, card_id in enumerate(self.available_cards):
-            rect = pygame.Rect(self.x + 20, start_y + i * (button_height + spacing),
-                              self.width - 40, button_height)
-            self.card_buttons.append((rect, card_id))
+            row = i // self.CARDS_PER_ROW - self.scroll_offset
+            col = i % self.CARDS_PER_ROW
+
+            if row < 0 or row >= self.max_visible_rows:
+                continue
+
+            x = start_x + col * (self.CARD_WIDTH + spacing)
+            y = start_y + row * (self.CARD_HEIGHT + spacing + 10)
+
+            rect = pygame.Rect(x, y, self.CARD_WIDTH, self.CARD_HEIGHT)
+            self.card_rects.append((rect, card_id))
 
     def draw(self, screen: pygame.Surface):
-        """Draw the menu."""
+        """Draw the menu with visual cards."""
         if not self.is_visible:
             return
 
@@ -220,42 +397,66 @@ class DrawMenu:
 
         # Title
         title = self.font.render("Select Card to Draw", True, (255, 255, 255))
-        title_rect = title.get_rect(center=(self.x + self.width // 2, self.y + 25))
+        title_rect = title.get_rect(center=(self.x + self.width // 2, self.y + 28))
         screen.blit(title, title_rect)
 
         # Close button
-        close_rect = pygame.Rect(self.x + self.width - 30, self.y + 5, 25, 25)
-        pygame.draw.rect(screen, (150, 50, 50), close_rect, border_radius=5)
+        close_rect = pygame.Rect(self.x + self.width - 35, self.y + 8, 28, 28)
+        mouse_pos = pygame.mouse.get_pos()
+        close_hovered = close_rect.collidepoint(mouse_pos)
+        close_color = (180, 60, 60) if close_hovered else (150, 50, 50)
+        pygame.draw.rect(screen, close_color, close_rect, border_radius=5)
         close_text = self.font.render("X", True, (255, 255, 255))
         close_text_rect = close_text.get_rect(center=close_rect.center)
         screen.blit(close_text, close_text_rect)
 
-        # Card buttons
-        mouse_pos = pygame.mouse.get_pos()
-        for rect, card_id in self.card_buttons:
+        # Draw cards
+        for rect, card_id in self.card_rects:
             is_hovered = rect.collidepoint(mouse_pos)
-            color = (80, 80, 80) if is_hovered else (60, 60, 60)
 
-            pygame.draw.rect(screen, color, rect, border_radius=5)
-            pygame.draw.rect(screen, (100, 100, 100), rect, 1, border_radius=5)
+            # Draw card
+            card_surf = self._render_card(card_id)
+            screen.blit(card_surf, rect.topleft)
 
-            # Card name
-            import cards_database as db
-            info = db.get_card_info(card_id)
-            name = info[db.IDX_NAME] if info else card_id
-            cost = info[db.IDX_COST] if info else 0
+            # Highlight on hover
+            if is_hovered:
+                highlight = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+                pygame.draw.rect(highlight, (255, 255, 100, 80), (0, 0, rect.width, rect.height), border_radius=6)
+                pygame.draw.rect(highlight, (255, 255, 100), (0, 0, rect.width, rect.height), 3, border_radius=6)
+                screen.blit(highlight, rect.topleft)
 
-            name_text = self.font.render(name, True, (255, 255, 255))
-            screen.blit(name_text, (rect.x + 10, rect.y + 5))
+        # Scroll indicators
+        total_rows = (len(self.available_cards) + self.CARDS_PER_ROW - 1) // self.CARDS_PER_ROW
 
-            cost_text = self.small_font.render(f"Cost: {cost} turns", True, (150, 200, 255))
-            screen.blit(cost_text, (rect.x + 10, rect.y + 22))
+        if self.scroll_offset > 0:
+            # Up arrow
+            arrow_rect = pygame.Rect(self.x + self.width // 2 - 20, self.y + 45, 40, 20)
+            pygame.draw.polygon(screen, (150, 150, 150), [
+                (arrow_rect.centerx, arrow_rect.top),
+                (arrow_rect.left, arrow_rect.bottom),
+                (arrow_rect.right, arrow_rect.bottom)
+            ])
 
-        if not self.card_buttons:
+        if self.scroll_offset + self.max_visible_rows < total_rows:
+            # Down arrow
+            arrow_rect = pygame.Rect(self.x + self.width // 2 - 20, self.y + self.height - 50, 40, 20)
+            pygame.draw.polygon(screen, (150, 150, 150), [
+                (arrow_rect.left, arrow_rect.top),
+                (arrow_rect.right, arrow_rect.top),
+                (arrow_rect.centerx, arrow_rect.bottom)
+            ])
+
+        # Empty deck message
+        if not self.available_cards:
             empty_text = self.font.render("Deck is empty!", True, (200, 150, 150))
             empty_rect = empty_text.get_rect(center=(self.x + self.width // 2,
                                                      self.y + self.height // 2))
             screen.blit(empty_text, empty_rect)
+
+        # Card count
+        count_text = self.small_font.render(f"{len(self.available_cards)} cards in deck", True, (150, 150, 150))
+        count_rect = count_text.get_rect(center=(self.x + self.width // 2, self.y + self.height - 20))
+        screen.blit(count_text, count_rect)
 
     def handle_click(self, pos: tuple) -> str | None:
         """Handle click, returns card_id if a card was selected, 'close' if closed."""
@@ -263,18 +464,35 @@ class DrawMenu:
             return None
 
         # Close button
-        close_rect = pygame.Rect(self.x + self.width - 30, self.y + 5, 25, 25)
+        close_rect = pygame.Rect(self.x + self.width - 35, self.y + 8, 28, 28)
         if close_rect.collidepoint(pos):
             self.hide()
             return "close"
 
-        # Card buttons
-        for rect, card_id in self.card_buttons:
+        # Scroll up
+        total_rows = (len(self.available_cards) + self.CARDS_PER_ROW - 1) // self.CARDS_PER_ROW
+        if self.scroll_offset > 0:
+            up_rect = pygame.Rect(self.x + self.width // 2 - 20, self.y + 45, 40, 20)
+            if up_rect.collidepoint(pos):
+                self.scroll_offset -= 1
+                self._update_card_rects()
+                return None
+
+        # Scroll down
+        if self.scroll_offset + self.max_visible_rows < total_rows:
+            down_rect = pygame.Rect(self.x + self.width // 2 - 20, self.y + self.height - 50, 40, 20)
+            if down_rect.collidepoint(pos):
+                self.scroll_offset += 1
+                self._update_card_rects()
+                return None
+
+        # Card selection
+        for rect, card_id in self.card_rects:
             if rect.collidepoint(pos):
                 self.hide()
                 return card_id
 
-        # Click outside
+        # Click outside panel
         panel_rect = pygame.Rect(self.x, self.y, self.width, self.height)
         if not panel_rect.collidepoint(pos):
             self.hide()
@@ -289,7 +507,7 @@ class DrawMenu:
         self.x = (screen_width - self.width) // 2
         self.y = (screen_height - self.height) // 2
         if self.is_visible:
-            self._create_buttons()
+            self._update_card_rects()
 
 
 class ReinforcementUI:

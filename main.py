@@ -9,6 +9,7 @@ from hand_manager import HandManager
 from battlefield import Battlefield, LocationPanel
 from ui import TurnUI, DeckUI, DrawMenu, ReinforcementUI, CombatLogUI, GameOverUI
 from menu import MainMenu, DeckBuilder
+from audio_manager import AudioManager
 import cards_database as db
 
 
@@ -57,8 +58,13 @@ class Game:
         self.attacker_deck = ["Footman", "Footman", "Archer", "Eagle", "Knight"]
         self.defender_deck = ["Footman", "Footman", "Knight", "War_Hound", "Guardian"]
 
+        # Audio manager
+        self.audio_manager = AudioManager()
+        self.audio_manager.play_music()  # Try to play background music
+
         # Main menu and deck builder
         self.main_menu = MainMenu(self.screen_width, self.screen_height)
+        self.main_menu.audio_manager = self.audio_manager  # Share audio manager
         self.deck_builder = DeckBuilder(self.screen_width, self.screen_height)
 
         # Game components (initialized when game starts)
@@ -177,13 +183,18 @@ class Game:
     def _sync_battlefield_from_manager(self):
         """Sync battlefield visual state with game manager state."""
         for location_name in self.game_manager.LOCATIONS:
-            manager_atk = self.game_manager.battlefield_cards[location_name]["attacker"]
-            manager_def = self.game_manager.battlefield_cards[location_name]["defender"]
+            # Aggregate cards from all zones for visual display
+            all_atk = []
+            all_def = []
+            for zone in ["attacker_zone", "middle_zone", "defender_zone"]:
+                zone_data = self.game_manager.battlefield_cards[location_name][zone]
+                all_atk.extend(zone_data["attacker"])
+                all_def.extend(zone_data["defender"])
 
             if location_name in self.battlefield.locations:
                 loc = self.battlefield.locations[location_name]
-                loc.attacker_cards = manager_atk.copy()
-                loc.defender_cards = manager_def.copy()
+                loc.attacker_cards = all_atk
+                loc.defender_cards = all_def
 
         # Sync capture state for area control display
         self.battlefield.sync_capture_state(self.game_manager)
@@ -269,6 +280,11 @@ class Game:
                 if event.button == 1:  # Left click
                     if self.state == STATE_GAME:
                         self._handle_mouse_up(event.pos)
+
+            elif event.type == pygame.MOUSEWHEEL:
+                # Handle mouse wheel scrolling
+                if self.state == STATE_DECK_BUILDER:
+                    self.deck_builder.handle_scroll(event.y)
 
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
@@ -442,12 +458,11 @@ class Game:
     def update(self, dt: float):
         """Update game state."""
         if self.state == STATE_MENU:
-            # Menu doesn't need updates
-            pass
+            self.main_menu.update(dt)
         elif self.state == STATE_DECK_BUILDER:
-            # Deck builder doesn't need updates
-            pass
+            self.deck_builder.update(dt)
         elif self.state == STATE_GAME:
+            self.turn_ui.update_animation(dt)
             self.attacker_hand.update(dt)
             self.defender_hand.update(dt)
 
@@ -530,6 +545,7 @@ class Game:
             self.update(dt)
             self.draw()
 
+        self.audio_manager.cleanup()
         pygame.quit()
         sys.exit()
 

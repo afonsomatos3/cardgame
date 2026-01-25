@@ -1,0 +1,1 @@
+"""WarMasterMind Thin Client Package."""

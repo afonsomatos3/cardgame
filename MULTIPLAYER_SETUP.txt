@@ -1,0 +1,117 @@
+================================================================================
+                    WARMASTERMIND MULTIPLAYER SETUP
+================================================================================
+
+This guide explains how to set up multiplayer for WarMasterMind.
+
+================================================================================
+                           FOR YOU (THE HOST)
+================================================================================
+
+1. INSTALL DEPENDENCIES
+   Open a terminal in the project folder and run:
+
+   pip install websockets
+
+2. START THE SERVER
+   In the terminal, navigate to the server folder:
+
+   cd server
+   python run_server.py
+
+   The server will display your LAN IP address.
+
+3. PLAY THE GAME
+   You can either:
+   - Run the original main.py for local play
+   - Run the thin client to test: cd client && python client_game.py
+
+4. FOR INTERNET PLAY (Playing with friends not on your network)
+   a) Open your router settings (usually 192.168.1.1 or 192.168.0.1)
+   b) Find "Port Forwarding" settings
+   c) Add a rule:
+      - External Port: 8765
+      - Internal Port: 8765
+      - Internal IP: Your computer's local IP (shown when server starts)
+      - Protocol: TCP
+   d) Find your public IP at: https://whatismyip.com
+   e) Share your public IP with friends
+
+================================================================================
+                       FOR FRIENDS (CONNECTING)
+================================================================================
+
+Your friends only need the "client" folder. Send them:
+- client/client_game.py
+- client/network.py
+- client/requirements.txt
+
+SETUP FOR FRIENDS:
+
+1. INSTALL PYTHON
+   Download from: https://python.org/downloads
+   Make sure to check "Add Python to PATH" during installation!
+
+2. INSTALL DEPENDENCIES
+   Open Command Prompt/Terminal in the client folder:
+
+   pip install -r requirements.txt
+
+3. CONNECT TO GAME
+   Run the client with your server address:
+
+   python client_game.py --server ws://YOUR_IP:8765
+
+   Replace YOUR_IP with:
+   - LAN IP (like 192.168.1.100) if on same network
+   - Public IP if playing over internet
+
+4. CREATE ACCOUNT
+   - Click "Need account? Register"
+   - Enter username and password
+   - Click Register
+   - Then login with those credentials
+
+5. PLAY!
+   - Click "Find Match"
+   - Wait for opponent
+   - Game starts automatically!
+
+================================================================================
+                           GAME CONTROLS
+================================================================================
+
+- Click cards in hand to select them
+- Click battlefield locations to place selected card
+- Click "End Turn" when done
+- Selected card is highlighted yellow
+- Fog of war hides enemy positions where you have no troops
+
+================================================================================
+                           TROUBLESHOOTING
+================================================================================
+
+"Connection failed"
+- Make sure the server is running
+- Check the IP address is correct
+- Check firewall isn't blocking port 8765
+
+"Can't find match"
+- Both players need to click "Find Match"
+- Make sure both are connected to same server
+
+"Game desynced"
+- This shouldn't happen since server controls all logic
+- Try reconnecting
+
+================================================================================
+                           SECURITY NOTES
+================================================================================
+
+- All game logic runs on YOUR server
+- Clients can't cheat - they only send actions, server validates
+- Passwords  before storage
+- Friends don't have access to your game code, only the thin client
+
+================================================================================
+are hashed with salt

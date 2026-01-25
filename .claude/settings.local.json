@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3:*)",
+      "Bash(timeout 5 python3:*)",
+      "Bash(grep:*)",
+      "Bash(wc:*)",
+      "Bash(python main.py:*)",
+      "Bash(sqlite3:*)",
+      "Bash(ls:*)"
+    ]
+  }
+}

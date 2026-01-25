@@ -123,11 +123,11 @@ class Card:
         pygame.draw.rect(self.base_surface, (139, 90, 43),
                         (0, 0, self.width, self.height), 3, border_radius=8)
 
-        # Unit image
+        # Unit image (positioned below name and type line)
         if self.unit_image:
             img_rect = self.unit_image.get_rect()
             img_x = (self.width - img_rect.width) // 2
-            self.base_surface.blit(self.unit_image, (img_x, 25))
+            self.base_surface.blit(self.unit_image, (img_x, 38))
 
         # Get card info
         if self.card_info:
@@ -135,16 +135,31 @@ class Card:
             cost = self.card_info[db.IDX_COST]
             attack = self.card_info[db.IDX_ATTACK]
             health = self.card_info[db.IDX_HEALTH]
+            subtype = self.card_info[db.IDX_SUBTYPE] if len(self.card_info) > db.IDX_SUBTYPE else ""
+            species = self.card_info[db.IDX_SPECIES] if len(self.card_info) > db.IDX_SPECIES else ""
             special = self.card_info[db.IDX_SPECIAL] if len(self.card_info) > db.IDX_SPECIAL else ""
 
             font_small = pygame.font.Font(None, 22)
+            font_tiny = pygame.font.Font(None, 18)
             font_medium = pygame.font.Font(None, 28)
             font_large = pygame.font.Font(None, 36)
 
             # Name at top
             name_surface = font_medium.render(name, True, (50, 40, 30))
-            name_rect = name_surface.get_rect(centerx=self.width // 2, top=6)
+            name_rect = name_surface.get_rect(centerx=self.width // 2, top=4)
             self.base_surface.blit(name_surface, name_rect)
+
+            # Subtype and Species below name (e.g., "Ranged - Human")
+            type_parts = []
+            if subtype:
+                type_parts.append(subtype.replace(",", " "))
+            if species:
+                type_parts.append(species)
+            if type_parts:
+                type_text = " - ".join(type_parts)
+                type_surface = font_tiny.render(type_text, True, (100, 80, 60))
+                type_rect = type_surface.get_rect(centerx=self.width // 2, top=22)
+                self.base_surface.blit(type_surface, type_rect)
 
             # Cost circle in top-left - larger
             pygame.draw.circle(self.base_surface, (70, 130, 180), (22, 22), 17)

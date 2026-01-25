@@ -117,7 +117,7 @@ class LocationZone:
         # Card count indicators
         small_font = pygame.font.Font(None, 20)
 
-        # Determine visibility
+        # Determine visibility - complete fog of war when no presence
         can_see_opponent = current_player is None or self.can_see_opponent(current_player)
 
         # Show own cards count
@@ -149,12 +149,13 @@ class LocationZone:
             own_text = small_font.render(f"{own_label}: {own_count}", True, own_color)
             screen.blit(own_text, (self.x + 5, self.y + 30))
 
-        if can_see_opponent and opp_count > 0:
-            opp_text = small_font.render(f"{opp_label}: {opp_count}", True, opp_color)
-            screen.blit(opp_text, (self.x + 5, self.y + 45))
-        elif not can_see_opponent:
-            unknown_text = small_font.render(f"{opp_label}: ???", True, (150, 150, 150))
-            screen.blit(unknown_text, (self.x + 5, self.y + 45))
+        # FOG OF WAR: Only show enemy info if player has presence
+        # If no presence, show NOTHING about enemy - complete information blackout
+        if can_see_opponent:
+            if opp_count > 0:
+                opp_text = small_font.render(f"{opp_label}: {opp_count}", True, opp_color)
+                screen.blit(opp_text, (self.x + 5, self.y + 45))
+        # When can_see_opponent is False, show nothing at all about enemy presence
 
         # Show blocked indicator
         if self.blocked_by:
@@ -166,8 +167,9 @@ class LocationZone:
             screen.blit(blocked_text, blocked_rect)
 
         # Draw capture progress for capturable locations (only if player has presence)
+        # FOG OF WAR: completely hide capture progress when no troops present
         if self.is_capturable:
-            can_see_progress = current_player is None or self.player_has_presence(current_player)
+            can_see_progress = current_player is None or self.player_has_presence(current_player) or self.player_has_scout(current_player)
             self._draw_capture_progress(screen, small_font, current_player, can_see_progress)
 
     def _draw_capture_progress(self, screen: pygame.Surface, font: pygame.font.Font,
@@ -544,6 +546,14 @@ class Battlefield:
                 location.capture_threshold_attacker = info.get("attacker_threshold", 5)
                 location.capture_threshold_defender = info.get("defender_threshold", 5)
 
+            # Update blocked_by based on actual access (considering conquests)
+            new_blocked = []
+            if not game_manager.can_place_at_location(name, Player.ATTACKER):
+                new_blocked.append("Attacker")
+            if not game_manager.can_place_at_location(name, Player.DEFENDER):
+                new_blocked.append("Defender")
+            location.blocked_by = new_blocked
+
 
 class LocationPanel:
     """Panel showing cards at a specific location with card images."""
@@ -780,14 +790,21 @@ class LocationPanel:
                         (self.x + 20, mid_y),
                         (self.x + self.width - 20, mid_y), 1)
 
-        # Enemy cards section
-        opp_label_surface = self.small_font.render(opp_label, True, opp_color)
-        screen.blit(opp_label_surface, (self.x + 20, mid_y + 10))
-
+        # Enemy cards section - FOG OF WAR: hide completely when no visibility
         if can_see_opponent:
+            opp_label_surface = self.small_font.render(opp_label, True, opp_color)
+            screen.blit(opp_label_surface, (self.x + 20, mid_y + 10))
             self._draw_cards_row(screen, opp_cards, self.x + 20, mid_y + 30, True)
         else:
-            self._draw_cards_row(screen, opp_cards, self.x + 20, mid_y + 30, False)
+            # Complete fog of war - no information about enemy presence
+            fog_label = "Enemy Cards: [NO INTEL]"
+            fog_surface = self.small_font.render(fog_label, True, (100, 100, 100))
+            screen.blit(fog_surface, (self.x + 20, mid_y + 10))
+
+            # Draw fog of war visual
+            fog_text = self.font.render("No troops in area - enemy hidden", True, (120, 120, 120))
+            fog_rect = fog_text.get_rect(center=(self.x + self.width // 2, mid_y + 80))
+            screen.blit(fog_text, fog_rect)
 
     def _draw_cards_row(self, screen: pygame.Surface, cards: list,
                         x: int, y: int, visible: bool):
