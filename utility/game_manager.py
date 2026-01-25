@@ -317,6 +317,10 @@ class GameManager:
         # Track if player has drawn a card this phase (1 draw per phase)
         self.attacker_has_drawn = False
         self.defender_has_drawn = False
+        
+        # Track territory bonus draws (count how many bonus draws used)
+        self.attacker_bonus_draws_used = 0
+        self.defender_bonus_draws_used = 0
 
         # Track if player has moved a card this phase (1 move per phase)
         self.attacker_has_moved = False
@@ -449,17 +453,34 @@ class GameManager:
         return True
 
     def can_draw_card(self, player: Player) -> bool:
-        """Check if a player can draw a card this phase."""
+        """Check if a player can draw a card this phase.
+        
+        Each player can draw 1 base card per turn.
+        Additionally, for each territory controlled (conquered), they get 1 bonus draw.
+        """
+        # Count all controlled territories (any location controlled by the player)
+        territories_controlled = sum(
+            1 for loc in self.LOCATIONS
+            if self.location_control.get(loc) == player
+        )
+        
+        # Total draws available: 1 base + 1 per controlled territory
+        total_draws_available = 1 + territories_controlled
+        
         if player == Player.ATTACKER:
-            return not self.attacker_has_drawn
+            # Count total draws used: base draw + bonus draws
+            draws_used = (1 if self.attacker_has_drawn else 0) + self.attacker_bonus_draws_used
+            return draws_used < total_draws_available
         else:
-            return not self.defender_has_drawn
+            # Count total draws used: base draw + bonus draws
+            draws_used = (1 if self.defender_has_drawn else 0) + self.defender_bonus_draws_used
+            return draws_used < total_draws_available
 
     def draw_card_from_deck(self, card_id: str, player: Player) -> bool:
         """Draw a specific card from the player's deck to the queue."""
         # Check if player can draw
         if not self.can_draw_card(player):
-            print(f"{'Attacker' if player == Player.ATTACKER else 'Defender'} already drew a card this phase!")
+            print(f"{'Attacker' if player == Player.ATTACKER else 'Defender'} already used all available draws this phase!")
             return False
 
         deck = self.player_decks[player]
@@ -468,10 +489,17 @@ class GameManager:
             result = self.draw_card_to_queue(card_id, player)
             if result:
                 # Mark that this player has drawn
+                # First draw uses the regular flag, subsequent draws increment the bonus counter
                 if player == Player.ATTACKER:
-                    self.attacker_has_drawn = True
+                    if not self.attacker_has_drawn:
+                        self.attacker_has_drawn = True
+                    else:
+                        self.attacker_bonus_draws_used += 1
                 else:
-                    self.defender_has_drawn = True
+                    if not self.defender_has_drawn:
+                        self.defender_has_drawn = True
+                    else:
+                        self.defender_bonus_draws_used += 1
             return result
         return False
 
@@ -566,6 +594,7 @@ class GameManager:
             self.current_player = Player.DEFENDER
             # Reset defender's flags for their new phase
             self.defender_has_drawn = False
+            self.defender_bonus_draws_used = 0
             self.defender_has_moved = False
             # Untap defender's cards at start of their turn
             self.untap_cards(Player.DEFENDER)
@@ -594,6 +623,8 @@ class GameManager:
                 # Reset all flags for new turn
                 self.attacker_has_drawn = False
                 self.defender_has_drawn = False
+                self.attacker_bonus_draws_used = 0
+                self.defender_bonus_draws_used = 0
                 self.attacker_has_moved = False
                 self.defender_has_moved = False
                 self.current_turn += 1
@@ -1524,9 +1555,10 @@ class GameManager:
         """
         captures = []
 
-        for location in self.CAPTURABLE_LOCATIONS:
+        for location in self.LOCATIONS:
+            # Can conquer any location that isn't already controlled
             if self.location_control[location] is not None:
-                continue  # Already controlled
+                continue
 
             mid_zone = self.battlefield_cards[location]["middle_zone"]
 
@@ -1590,14 +1622,12 @@ class GameManager:
     def get_location_capture_info(self, location: str) -> dict:
         """Get capture information for a location.
 
-        Returns dict with power, threshold, and control info.
+        Any location can be conquered. Returns dict with power, threshold, and control info.
         """
-        if location not in self.CAPTURABLE_LOCATIONS:
-            return {
-                "capturable": False,
-                "controller": self.location_control.get(location)
-            }
+        if location not in self.LOCATIONS:
+            return {"capturable": False, "controller": None}
 
+        # If already controlled, show it as controlled but still capturable (can be reconquered)
         return {
             "capturable": True,
             "controller": self.location_control[location],

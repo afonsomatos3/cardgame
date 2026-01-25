@@ -105,6 +105,11 @@ class GameSession:
                     }
 
                 can_see = has_presence or has_scout
+                
+                # Also can see if you control the location (see enemy troops without needing presence)
+                location_controller = gm.location_control.get(location)
+                if location_controller == player:
+                    can_see = True
 
                 # Update enemy visibility based on can_see
                 for zone_name in ["attacker_zone", "middle_zone", "defender_zone"]:
