@@ -31,13 +31,14 @@ STATE_LOBBY = "lobby"
 STATE_FRIENDS = "friends"
 STATE_DECK_BUILDER = "deck_builder"
 STATE_MATCHMAKING = "matchmaking"
+STATE_MATCH_START = "match_start"
 STATE_GAME = "game"
 STATE_COMBAT_SELECT = "combat_select"
 STATE_GAME_OVER = "game_over"
 
 # Card dimensions - BIGGER cards
-CARD_WIDTH = 130
-CARD_HEIGHT = 182
+CARD_WIDTH = 160
+CARD_HEIGHT = 224
 CARD_FOCUS_SCALE = 1.35  # Much bigger on hover for readability
 
 # Deck building card size - optimized
@@ -425,7 +426,7 @@ class DrawMenu:
 
         # Overlay with fade
         overlay = pygame.Surface((self.screen_width, self.screen_height), pygame.SRCALPHA)
-        alpha = int(180 * self.panel_scale.value)
+        alpha = max(0, min(255, int(180 * self.panel_scale.value)))
         overlay.fill((0, 0, 0, alpha))
         screen.blit(overlay, (0, 0))
 
@@ -713,7 +714,7 @@ class LocationPanel:
 
         # Overlay
         overlay = pygame.Surface((self.screen_width, self.screen_height), pygame.SRCALPHA)
-        alpha = int(180 * self.panel_scale.value)
+        alpha = max(0, min(255, int(180 * self.panel_scale.value)))
         overlay.fill((0, 0, 0, alpha))
         screen.blit(overlay, (0, 0))
 
@@ -1086,7 +1087,7 @@ class CombatSelector:
 
         # Overlay
         overlay = pygame.Surface((self.screen_width, self.screen_height), pygame.SRCALPHA)
-        alpha = int(200 * self.panel_scale.value)
+        alpha = max(0, min(255, int(200 * self.panel_scale.value)))
         overlay.fill((0, 0, 0, alpha))
         screen.blit(overlay, (0, 0))
 
@@ -1299,6 +1300,7 @@ class ThinClient:
 
     def __init__(self, server_url: str = "ws://localhost:8765"):
         pygame.init()
+        pygame.mixer.init()
         pygame.display.set_caption("WarMasterMind - Online")
 
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.RESIZABLE)
@@ -1307,6 +1309,9 @@ class ThinClient:
 
         self.screen_width = SCREEN_WIDTH
         self.screen_height = SCREEN_HEIGHT
+
+        # Music
+        self.game_music_playing = False
 
         self.title_font = pygame.font.Font(None, 72)
         self.font = pygame.font.Font(None, 36)
@@ -1326,6 +1331,9 @@ class ThinClient:
         self.state = STATE_LOGIN
         self.game_state = None
         self.match_info = None
+        self.match_transition_timer = 0.0
+        self.match_transition_duration = 3.5
+        self.role_flip_speed = 0.15  # Speed of role flip animation
         self.waiting_for_combat = None  # Location where waiting for opponent's blocker assignment
         self.error_message = None
         self.error_timer = 0
@@ -1357,6 +1365,7 @@ class ThinClient:
         self.hand_cards: list[AnimatedCard] = []
         self.focused_hand_card: AnimatedCard | None = None
         self.dragging_card: AnimatedCard | None = None
+        self.opponent_hand_count = 0  # Track opponent's hand card count
 
         self._card_cache = {}
         self._reinforcement_rects = []  # For hover detection on incoming cards
@@ -1464,6 +1473,7 @@ class ThinClient:
             self.hand_cards = []
             return
         hand = self.game_state.get("hand", [])
+        self.opponent_hand_count = self.game_state.get("opponent_hand_count", 0)
         current_ids = {c.get("card_id") for c in hand}
         self.hand_cards = [c for c in self.hand_cards if c.card_id in current_ids]
         existing_ids = {c.card_id for c in self.hand_cards}
@@ -1476,18 +1486,43 @@ class ThinClient:
         if not self.hand_cards:
             return
         num = len(self.hand_cards)
-        hand_y = self.screen_height - 110
+        hand_y = self.screen_height - 160
         center_x = self.screen_width // 2
-        arc_span = min(math.pi * 0.45, num * 0.1)
+        arc_span = min(math.pi * 0.35, num * 0.08)
         start_a, end_a = math.pi / 2 - arc_span / 2, math.pi / 2 + arc_span / 2
-        radius_x, radius_y = self.screen_width * 0.28, 180
+        radius_x, radius_y = self.screen_width * 0.32, 120
         for i, card in enumerate(self.hand_cards):
             angle = math.pi / 2 if num == 1 else start_a + (end_a - start_a) * (i / (num - 1))
             x = center_x + radius_x * math.cos(angle)
             y = hand_y + 60 - radius_y * math.sin(angle)
             card.set_position(x, y, (angle - math.pi / 2) * 20)
 
-    def _on_match_found(self, data): self.match_info = data; self.state = STATE_GAME
+    def _play_game_music(self):
+        """Play background music for the match."""
+        if self.game_music_playing:
+            return
+        try:
+            music_path = os.path.join("resources", "Songs", "CastleSong.mp3")
+            if os.path.exists(music_path):
+                pygame.mixer.music.load(music_path)
+                pygame.mixer.music.set_volume(0.5)  # 50% volume
+                pygame.mixer.music.play(-1)  # Loop infinitely
+                self.game_music_playing = True
+                print(f"[MUSIC] Playing game music: {music_path}")
+        except Exception as e:
+            print(f"[MUSIC] Error loading music: {e}")
+
+    def _stop_game_music(self):
+        """Stop the background music."""
+        if self.game_music_playing:
+            try:
+                pygame.mixer.music.stop()
+                self.game_music_playing = False
+                print("[MUSIC] Stopping game music")
+            except Exception as e:
+                print(f"[MUSIC] Error stopping music: {e}")
+
+    def _on_match_found(self, data): self.match_info = data; self.match_transition_timer = 0.0; self.state = STATE_MATCH_START; self._play_game_music()
     def _on_action_result(self, data):
         if data.get("winner"): self.state = STATE_GAME_OVER; self.winner = data["winner"]
     def _on_error(self, e): self.error_message = e; self.error_timer = 3.0
@@ -1593,7 +1628,8 @@ class ThinClient:
         elif self.state == STATE_FRIENDS: self._handle_friends_click(pos)
         elif self.state == STATE_DECK_BUILDER: self._handle_deck_builder_click(pos)
         elif self.state == STATE_GAME: self._handle_game_click(pos)
-        elif self.state == STATE_GAME_OVER: self.state = STATE_LOBBY; self.game_state = None
+        elif self.state == STATE_GAME_OVER: self.state = STATE_LOBBY; self.game_state = None; self._stop_game_music()
+        elif self.state == STATE_MATCH_START: self.state = STATE_GAME
 
     def _handle_mouse_up(self, pos):
         if self.state == STATE_GAME and self.dragging_card:
@@ -1748,6 +1784,7 @@ class ThinClient:
         elif self.state == STATE_FRIENDS: self._draw_friends()
         elif self.state == STATE_DECK_BUILDER: self._draw_deck_builder()
         elif self.state == STATE_MATCHMAKING: self._draw_matchmaking()
+        elif self.state == STATE_MATCH_START: self._draw_match_start_transition()
         elif self.state in [STATE_GAME, STATE_COMBAT_SELECT]: self._draw_game()
         elif self.state == STATE_GAME_OVER: self._draw_game_over()
         if self.error_message:
@@ -2021,8 +2058,109 @@ class ThinClient:
         if not self.game_state:
             self.screen.blit(self.font.render("Loading...", True, WHITE),
                            self.font.render("Loading...", True, WHITE).get_rect(center=(self.screen_width // 2, self.screen_height // 2))); return
-        self._draw_battlefield(); self._draw_hand(); self._draw_turn_info(); self._draw_deck(); self._draw_reinforcements()
+        self._draw_opponent_info(); self._draw_opponent_hand(); self._draw_battlefield(); self._draw_hand(); self._draw_turn_info(); self._draw_deck(); self._draw_reinforcements()
         self.draw_menu.draw(self.screen); self.location_panel.draw(self.screen); self.combat_selector.draw(self.screen)
+
+    def _draw_match_start_transition(self):
+        """Draw the match start transition with player info and role assignment."""
+        # Background overlay
+        overlay = pygame.Surface((self.screen_width, self.screen_height))
+        overlay.fill((20, 20, 30))
+        self.screen.blit(overlay, (0, 0))
+        
+        progress = min(1.0, self.match_transition_timer / self.match_transition_duration)
+        
+        if not self.match_info:
+            return
+        
+        # Extract player info
+        your_name = self.match_info.get("your_name", "You")
+        your_wins = self.match_info.get("your_wins", 0)
+        your_losses = self.match_info.get("your_losses", 0)
+        opponent_name = self.match_info.get("opponent_name", "Opponent")
+        opponent_wins = self.match_info.get("opponent_wins", 0)
+        opponent_losses = self.match_info.get("opponent_losses", 0)
+        your_role = self.match_info.get("role", "attacker")
+        
+        center_x = self.screen_width // 2
+        center_y = self.screen_height // 2
+        
+        # Main title with fade in
+        title_alpha = int(255 * min(1.0, progress * 2))
+        title_text = pygame.font.Font(None, 64).render("MATCH START", True, (255, 200, 50))
+        title_surf = pygame.Surface((self.screen_width, 100), pygame.SRCALPHA)
+        title_colored = pygame.Surface(title_text.get_size(), pygame.SRCALPHA)
+        title_colored.blit(title_text, (0, 0))
+        title_colored.set_alpha(title_alpha)
+        title_rect = title_colored.get_rect(center=(center_x, center_y - 200))
+        self.screen.blit(title_colored, title_rect)
+        
+        # Left side - Your info
+        left_x = center_x - 300
+        info_y = center_y - 50
+        
+        your_name_font = pygame.font.Font(None, 48)
+        your_name_text = your_name_font.render(your_name, True, (100, 200, 255))
+        self.screen.blit(your_name_text, (left_x - your_name_text.get_width() // 2, info_y))
+        
+        record_font = pygame.font.Font(None, 36)
+        record_text = record_font.render(f"{your_wins}W - {your_losses}L", True, (150, 150, 150))
+        self.screen.blit(record_text, (left_x - record_text.get_width() // 2, info_y + 60))
+        
+        # Right side - Opponent info
+        right_x = center_x + 300
+        
+        opponent_name_text = your_name_font.render(opponent_name, True, (255, 100, 100))
+        self.screen.blit(opponent_name_text, (right_x - opponent_name_text.get_width() // 2, info_y))
+        
+        opp_record_text = record_font.render(f"{opponent_wins}W - {opponent_losses}L", True, (150, 150, 150))
+        self.screen.blit(opp_record_text, (right_x - opp_record_text.get_width() // 2, info_y + 60))
+        
+        # Role assignment animation (flipping effect)
+        flip_progress = (progress - 0.3) / 0.4 if progress > 0.3 else 0  # Start after 0.3s
+        flip_progress = max(0, min(1.0, flip_progress))
+        
+        if flip_progress > 0:
+            role_y = center_y + 80
+            role_size = int(40 + flip_progress * 20)
+            role_font = pygame.font.Font(None, role_size)
+            
+            # Flip animation
+            flip_angle = flip_progress * 360
+            if flip_angle < 180:
+                # First half of flip - show random text
+                import random
+                random.seed(int(flip_angle / 10))
+                roles = ["ATTACKER", "DEFENDER"]
+                display_role = random.choice(roles)
+                role_color = RED if display_role == "ATTACKER" else BLUE
+            else:
+                # Second half - show actual role
+                display_role = your_role.upper()
+                role_color = RED if your_role == "attacker" else BLUE
+            
+            role_text = role_font.render(f"You are: {display_role}", True, role_color)
+            role_alpha = int(255 * min(1.0, flip_progress))
+            role_text.set_alpha(role_alpha)
+            self.screen.blit(role_text, role_text.get_rect(center=(center_x, role_y)))
+        
+        # VS text in the middle
+        vs_progress = max(0, min(1.0, (progress - 0.15) * 1.5))
+        if vs_progress > 0:
+            vs_font = pygame.font.Font(None, 72)
+            vs_text = vs_font.render("VS", True, (255, 255, 100))
+            vs_alpha = int(255 * vs_progress)
+            vs_text.set_alpha(vs_alpha)
+            self.screen.blit(vs_text, vs_text.get_rect(center=(center_x, center_y + 20)))
+        
+        # Skip message at the end
+        skip_progress = max(0, progress - 0.7)
+        if skip_progress > 0:
+            skip_font = pygame.font.Font(None, 24)
+            skip_text = skip_font.render("Click to continue...", True, (150, 150, 150))
+            skip_alpha = int(200 * skip_progress * 2 * (1 - (skip_progress - 0.5) ** 2))
+            skip_text.set_alpha(max(0, min(255, skip_alpha)))
+            self.screen.blit(skip_text, skip_text.get_rect(center=(center_x, self.screen_height - 50)))
         # Show waiting message when opponent is assigning blockers
         if self.waiting_for_combat:
             wait_text = self.font.render(f"Waiting for opponent to assign blockers at {self.waiting_for_combat}...", True, GOLD)
@@ -2104,6 +2242,63 @@ class ThinClient:
         o2x, o2y = (r2.width // 2 + 4) * math.cos(a), (r2.height // 2 + 4) * math.sin(a)
         pygame.draw.line(self.screen, (70, 70, 75), (c1[0] + o1x, c1[1] + o1y), (c2[0] - o2x, c2[1] - o2y), 2)
 
+    def _draw_opponent_hand(self):
+        """Draw opponent's hand cards (card backs) at the top of the screen."""
+        num_cards = self.opponent_hand_count
+        if num_cards == 0:
+            return
+        
+        # Card back dimensions
+        card_w, card_h = CARD_WIDTH, CARD_HEIGHT
+        hand_y = 80
+        center_x = self.screen_width // 2
+        
+        # Create arc positioning similar to player's hand but at top
+        arc_span = min(math.pi * 0.35, num_cards * 0.08)
+        start_a, end_a = math.pi * 1.5 - arc_span / 2, math.pi * 1.5 + arc_span / 2
+        radius_x, radius_y = self.screen_width * 0.32, 120
+        
+        for i in range(num_cards):
+            angle = math.pi * 1.5 if num_cards == 1 else start_a + (end_a - start_a) * (i / (num_cards - 1))
+            x = center_x + radius_x * math.cos(angle)
+            y = hand_y - 60 - radius_y * math.sin(angle)
+            
+            # Calculate rotation for card back based on position
+            rotation = (angle - math.pi * 1.5) * 20
+            
+            # Render card back
+            self._draw_card_back(int(x), int(y), rotation)
+    
+    def _draw_card_back(self, x: int, y: int, rotation: float = 0):
+        """Draw a card back (face down) at specified position."""
+        card_w, card_h = CARD_WIDTH, CARD_HEIGHT
+        
+        # Create card back surface
+        card_back = pygame.Surface((card_w, card_h), pygame.SRCALPHA)
+        
+        # Draw card back with border
+        pygame.draw.rect(card_back, (40, 80, 120), (0, 0, card_w, card_h), border_radius=8)
+        pygame.draw.rect(card_back, (100, 140, 180), (0, 0, card_w, card_h), 3, border_radius=8)
+        
+        # Draw pattern on card back
+        pattern_color = (60, 100, 140)
+        for row in range(4):
+            for col in range(3):
+                px = 15 + col * (card_w - 30) // 2
+                py = 30 + row * (card_h - 60) // 3
+                pygame.draw.circle(card_back, pattern_color, (px, py), 8)
+        
+        # Draw decorative border inside
+        pygame.draw.rect(card_back, (80, 120, 160), (8, 8, card_w - 16, card_h - 16), 2, border_radius=6)
+        
+        # Apply rotation if needed
+        if rotation != 0:
+            card_back = pygame.transform.rotozoom(card_back, rotation, 1.0)
+        
+        # Get rotated rect for positioning
+        card_rect = card_back.get_rect(center=(x, y))
+        self.screen.blit(card_back, card_rect)
+
     def _draw_hand(self):
         for c in self.hand_cards:
             if c != self.focused_hand_card and c != self.dragging_card: self._draw_animated_card(c)
@@ -2176,20 +2371,35 @@ class ThinClient:
         self.screen.blit(self.font.render(pt, True, pc), (20, 85))
         self.screen.blit(self.small_font.render(f"You are: {yr.upper()}", True, RED if yr == "attacker" else BLUE), (20, 120))
         if iyt:
-            etr = pygame.Rect(self.screen_width - 150, 20, 130, 40)
+            etr = pygame.Rect(self.screen_width - 180, 15, 160, 55)
             pygame.draw.rect(self.screen, (150, 100, 50), etr, border_radius=8)
-            self.screen.blit(self.font.render("End Turn", True, WHITE), self.font.render("End Turn", True, WHITE).get_rect(center=etr.center))
+            btn_font = pygame.font.Font(None, 36)
+            self.screen.blit(btn_font.render("End Turn", True, WHITE), btn_font.render("End Turn", True, WHITE).get_rect(center=etr.center))
+
+    def _draw_opponent_info(self):
+        """Display opponent's hand card count and role."""
+        opp_hand_count = self.game_state.get("opponent_hand_count", 0)
+        opp_role = "DEFENDER" if self.game_state.get("your_role") == "attacker" else "ATTACKER"
+        opp_role_color = BLUE if opp_role == "DEFENDER" else RED
+        
+        # Display opponent role and hand count at top right
+        role_text = self.small_font.render(f"Opponent: {opp_role}", True, opp_role_color)
+        hand_text = self.font.render(f"Cards: {opp_hand_count}", True, WHITE)
+        
+        self.screen.blit(role_text, (self.screen_width - role_text.get_width() - 20, 20))
+        self.screen.blit(hand_text, (self.screen_width - hand_text.get_width() - 20, 50))
 
     def _draw_deck(self):
         dc = self.game_state.get("deck_count", 0); cd = self.game_state.get("can_draw", False)
-        dr = pygame.Rect(self.screen_width - 120, self.screen_height - 180, 100, 140)
+        dr = pygame.Rect(self.screen_width - 150, self.screen_height - 210, 130, 180)
         for i in range(min(3, dc)):
-            cr = pygame.Rect(dr.x + i * 2, dr.y - i * 2, 100, 140)
-            pygame.draw.rect(self.screen, (85, 65, 45) if cd else (55, 55, 55), cr, border_radius=6)
-            pygame.draw.rect(self.screen, (65, 45, 25), cr, 2, border_radius=6)
+            cr = pygame.Rect(dr.x + i * 3, dr.y - i * 3, 130, 180)
+            pygame.draw.rect(self.screen, (85, 65, 45) if cd else (55, 55, 55), cr, border_radius=8)
+            pygame.draw.rect(self.screen, (65, 45, 25), cr, 3, border_radius=8)
         self.screen.blit(self.font.render(str(dc), True, WHITE), self.font.render(str(dc), True, WHITE).get_rect(center=dr.center))
         lb = "CLICK TO DRAW" if cd else "DRAWN"
-        self.screen.blit(self.small_font.render(lb, True, GRAY), self.small_font.render(lb, True, GRAY).get_rect(centerx=dr.centerx, top=dr.bottom + 5))
+        btn_font = pygame.font.Font(None, 28)
+        self.screen.blit(btn_font.render(lb, True, GRAY), btn_font.render(lb, True, GRAY).get_rect(centerx=dr.centerx, top=dr.bottom + 8))
 
     def _draw_reinforcements(self):
         if not self.reinforcements:

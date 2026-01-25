@@ -11,8 +11,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from websockets.server import serve
 from websockets.exceptions import ConnectionClosed
 from database import Database
-from game_manager import GameManager, Player
-import cards_database as db
+from utility.game_manager import GameManager, Player
+import utility.cards_database as db
 
 
 class GameSession:
@@ -144,6 +144,10 @@ class GameSession:
             # Get hand
             hand = gm.get_hand(player)
 
+            # Get opponent's hand count
+            opponent_player = Player.DEFENDER if player == Player.ATTACKER else Player.ATTACKER
+            opponent_hand_count = len(gm.get_hand(opponent_player))
+
             # Get reinforcements
             reinforcements = gm.get_hand_reinforcements(player)
 
@@ -193,6 +197,7 @@ class GameSession:
                 "current_player": "attacker" if gm.current_player == Player.ATTACKER else "defender",
                 "your_role": player_key,
                 "is_your_turn": gm.current_player == player,
+                "opponent_hand_count": opponent_hand_count,
                 "battlefield": battlefield,
                 "hand": [self._serialize_card(c) for c in hand],
                 "reinforcements": [
@@ -723,19 +728,33 @@ class GameServer:
             self.user_games[user_id] = match_id
             self.user_games[opponent_id] = match_id
 
+            # Get player stats
+            attacker_stats = self.database.get_user_stats(user_id)
+            defender_stats = self.database.get_user_stats(opponent_id)
+
             # Notify both players
             await websocket.send(json.dumps({
                 "type": "match_found",
                 "match_id": match_id,
                 "role": "attacker",
-                "opponent": opponent["username"]
+                "your_name": attacker_stats["username"],
+                "your_wins": attacker_stats["wins"],
+                "your_losses": attacker_stats["losses"],
+                "opponent_name": defender_stats["username"],
+                "opponent_wins": defender_stats["wins"],
+                "opponent_losses": defender_stats["losses"]
             }))
 
             await opponent_ws.send(json.dumps({
                 "type": "match_found",
                 "match_id": match_id,
                 "role": "defender",
-                "opponent": self.database.get_user_stats(user_id)["username"]
+                "your_name": defender_stats["username"],
+                "your_wins": defender_stats["wins"],
+                "your_losses": defender_stats["losses"],
+                "opponent_name": attacker_stats["username"],
+                "opponent_wins": attacker_stats["wins"],
+                "opponent_losses": attacker_stats["losses"]
             }))
 
             # Send initial game state
