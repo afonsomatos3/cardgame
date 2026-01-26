@@ -2,8 +2,8 @@
 
 import os
 import pygame
-from game_manager import Player
-import cards_database as db
+from utility.game_manager import Player
+import utility.cards_database as db
 
 
 def card_has_scout(card_data: dict) -> bool:
@@ -627,7 +627,7 @@ class LocationPanel:
             attack = card_info[db.IDX_ATTACK] if len(card_info) > db.IDX_ATTACK else 0
             health = card_info[db.IDX_HEALTH] if len(card_info) > db.IDX_HEALTH else 0
             cost = card_info[db.IDX_COST] if len(card_info) > db.IDX_COST else 0
-            special = card_info[db.IDX_SPECIAL] if len(card_info) > db.IDX_SPECIAL else ""
+            special = card_info[db.IDX_SKILLS] if len(card_info) > db.IDX_SKILLS else ""
 
             tiny_font = pygame.font.Font(None, 14)
             micro_font = pygame.font.Font(None, 11)

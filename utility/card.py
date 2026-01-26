@@ -137,7 +137,7 @@ class Card:
             health = self.card_info[db.IDX_HEALTH]
             subtype = self.card_info[db.IDX_SUBTYPE] if len(self.card_info) > db.IDX_SUBTYPE else ""
             species = self.card_info[db.IDX_SPECIES] if len(self.card_info) > db.IDX_SPECIES else ""
-            special = self.card_info[db.IDX_SPECIAL] if len(self.card_info) > db.IDX_SPECIAL else ""
+            skills = self.card_info[db.IDX_SKILLS] if len(self.card_info) > db.IDX_SKILLS else ""
 
             font_small = pygame.font.Font(None, 22)
             font_tiny = pygame.font.Font(None, 18)
@@ -186,7 +186,7 @@ class Card:
             self.base_surface.blit(hp_text, hp_rect)
 
             # Special text area (if card has special ability)
-            if special:
+            if skills:
                 special_y = self.height - 80
                 special_font = pygame.font.Font(None, 16)
                 # Draw special text background
@@ -195,7 +195,7 @@ class Card:
                 pygame.draw.rect(special_bg, (139, 90, 43), (0, 0, self.width - 12, 50), 1, border_radius=4)
                 self.base_surface.blit(special_bg, (6, special_y))
                 # Wrap and render special text
-                words = special.split()
+                words = skills.split()
                 lines = []
                 current_line = []
                 for word in words:

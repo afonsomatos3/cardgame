@@ -3,7 +3,9 @@
 import asyncio
 import json
 import sys
+import os
 from pathlib import Path
+from http.server import HTTPServer, SimpleHTTPRequestHandler
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -13,6 +15,118 @@ from websockets.exceptions import ConnectionClosed
 from database import Database
 from utility.game_manager import GameManager, Player
 import utility.cards_database as db
+
+
+def format_card_data(card_id: str, card_info: list) -> dict:
+    """Format card data from database into client-ready format."""
+    return {
+        "name": card_info[db.IDX_NAME],
+        "type": card_info[db.IDX_TYPE],
+        "subtype": card_info[db.IDX_SUBTYPE],
+        "species": card_info[db.IDX_SPECIES],
+        "attack": card_info[db.IDX_ATTACK],
+        "health": card_info[db.IDX_HEALTH],
+        "cost": card_info[db.IDX_COST],
+        "skills": card_info[db.IDX_SKILLS] if len(card_info) > db.IDX_SKILLS else "",
+        "on_play": card_info[db.IDX_ON_PLAY] if len(card_info) > db.IDX_ON_PLAY else "",
+    }
+
+
+def get_all_cards() -> dict:
+    """Get all cards formatted for sending to client."""
+    cards = {}
+    for card_id, card_info in db.CARDS_DATA.items():
+        if card_id != "Avatar":  # Avatar is special, handled separately
+            cards[card_id] = format_card_data(card_id, card_info)
+    return cards
+
+
+class ResourceHTTPHandler(SimpleHTTPRequestHandler):
+    """HTTP handler for serving game resources."""
+
+    resource_base_path = None
+
+    def do_GET(self):
+        """Handle GET requests for resources."""
+        if self.path == "/resources/list":
+            # Return list of available resources
+            return self._handle_resource_list()
+        elif self.path.startswith("/resources/"):
+            # Serve specific resource file
+            return self._handle_resource_file()
+        else:
+            self.send_error(404, "Not Found")
+
+    def _handle_resource_list(self):
+        """Send JSON list of available resources."""
+        try:
+            resources = {}
+            resource_path = Path(self.resource_base_path)
+
+            for category_dir in resource_path.iterdir():
+                if category_dir.is_dir():
+                    category = category_dir.name
+                    files = [f.name for f in category_dir.iterdir() if f.is_file()]
+                    resources[category] = files
+
+            response = json.dumps(resources).encode()
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.send_header("Content-length", len(response))
+            self.end_headers()
+            self.wfile.write(response)
+        except Exception as e:
+            print(f"Error listing resources: {e}")
+            self.send_error(500, "Internal Server Error")
+
+    def _handle_resource_file(self):
+        """Serve a resource file."""
+        try:
+            # Extract path: /resources/category/filename
+            path_parts = self.path.split("/")
+            if len(path_parts) < 4:
+                self.send_error(400, "Bad Request")
+                return
+
+            category = path_parts[2]
+            filename = "/".join(path_parts[3:])  # Handle nested paths
+
+            # Security: prevent directory traversal
+            if ".." in category or ".." in filename:
+                self.send_error(403, "Forbidden")
+                return
+
+            filepath = Path(self.resource_base_path) / category / filename
+            
+            # Verify file exists and is within resource directory
+            if not filepath.exists() or not filepath.is_file():
+                self.send_error(404, "Not Found")
+                return
+
+            # Serve the file
+            with open(filepath, "rb") as f:
+                content = f.read()
+
+            self.send_response(200)
+            
+            # Set appropriate content type
+            if filename.endswith((".png", ".jpg", ".jpeg")):
+                self.send_header("Content-type", "image/png")
+            elif filename.endswith((".mp3", ".ogg", ".wav")):
+                self.send_header("Content-type", "audio/mpeg")
+            else:
+                self.send_header("Content-type", "application/octet-stream")
+            
+            self.send_header("Content-length", len(content))
+            self.end_headers()
+            self.wfile.write(content)
+        except Exception as e:
+            print(f"Error serving resource: {e}")
+            self.send_error(500, "Internal Server Error")
+
+    def log_message(self, format, *args):
+        """Suppress default logging."""
+        pass
 
 
 class GameSession:
@@ -239,7 +353,8 @@ class GameSession:
             "health": card_info[db.IDX_HEALTH] if len(card_info) > db.IDX_HEALTH else 0,
             "cost": card_info[db.IDX_COST] if len(card_info) > db.IDX_COST else 0,
             "subtype": card_info[db.IDX_SUBTYPE] if len(card_info) > db.IDX_SUBTYPE else "",
-            "special": card_info[db.IDX_SPECIAL] if len(card_info) > db.IDX_SPECIAL else "",
+            "skills": card_info[db.IDX_SKILLS] if len(card_info) > db.IDX_SKILLS else "",
+            "on_play": card_info[db.IDX_ON_PLAY] if len(card_info) > db.IDX_ON_PLAY else "",
             "current_health": card.get("current_health"),
             "is_tapped": card.get("is_tapped", False),
             "turn_placed": turn_placed,
@@ -444,9 +559,10 @@ class GameSession:
 class GameServer:
     """Main game server handling connections and matchmaking."""
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 8765):
+    def __init__(self, host: str = "0.0.0.0", port: int = 8765, resource_port: int = 8766):
         self.host = host
         self.port = port
+        self.resource_port = resource_port
         self.database = Database()
 
         # Active connections: token -> (user_id, websocket)
@@ -580,22 +696,9 @@ class GameServer:
 
                     elif msg_type == "get_cards":
                         # Send available cards (for deck building)
-                        cards = {}
-                        for card_id, card_info in db.CARDS_DATA.items():
-                            if card_id != "Avatar":
-                                cards[card_id] = {
-                                    "name": card_info[db.IDX_NAME],
-                                    "type": card_info[db.IDX_TYPE],
-                                    "subtype": card_info[db.IDX_SUBTYPE],
-                                    "species": card_info[db.IDX_SPECIES],
-                                    "attack": card_info[db.IDX_ATTACK],
-                                    "health": card_info[db.IDX_HEALTH],
-                                    "cost": card_info[db.IDX_COST],
-                                    "special": card_info[db.IDX_SPECIAL] if len(card_info) > db.IDX_SPECIAL else "",
-                                }
                         await websocket.send(json.dumps({
                             "type": "cards",
-                            "cards": cards
+                            "cards": get_all_cards()
                         }))
 
                     # ==================== FRIEND ACTIONS ====================
@@ -838,8 +941,25 @@ class GameServer:
     async def start(self):
         """Start the game server."""
         print(f"Starting WarMasterMind server on {self.host}:{self.port}")
+        print(f"Starting Resource server on {self.host}:{self.resource_port}")
+        
+        # Setup resource HTTP server
+        resource_base = Path(__file__).parent.parent
+        ResourceHTTPHandler.resource_base_path = str(resource_base / "resources")
+        
+        http_server = HTTPServer((self.host, self.resource_port), ResourceHTTPHandler)
+        
+        # Run HTTP server in a separate thread
+        def run_http_server():
+            http_server.serve_forever()
+        
+        import threading
+        http_thread = threading.Thread(target=run_http_server, daemon=True)
+        http_thread.start()
+        
         async with serve(self.handle_connection, self.host, self.port):
-            print(f"Server running! Players can connect to ws://{self.host}:{self.port}")
+            print(f"WebSocket server running! Players can connect to ws://{self.host}:{self.port}")
+            print(f"Resources available at http://{self.host}:{self.resource_port}/resources/")
             await asyncio.Future()  # Run forever
 
 
@@ -848,10 +968,11 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="WarMasterMind Game Server")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
-    parser.add_argument("--port", type=int, default=8765, help="Port to listen on")
+    parser.add_argument("--port", type=int, default=8765, help="WebSocket port to listen on")
+    parser.add_argument("--resource-port", type=int, default=8766, help="HTTP resource port to listen on")
     args = parser.parse_args()
 
-    server = GameServer(args.host, args.port)
+    server = GameServer(args.host, args.port, args.resource_port)
     asyncio.run(server.start())
 
 

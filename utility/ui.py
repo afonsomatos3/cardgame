@@ -275,7 +275,7 @@ class DrawMenu:
             cost = card_info[db.IDX_COST]
             subtype = card_info[db.IDX_SUBTYPE] if len(card_info) > db.IDX_SUBTYPE else ""
             species = card_info[db.IDX_SPECIES] if len(card_info) > db.IDX_SPECIES else ""
-            special = card_info[db.IDX_SPECIAL] if len(card_info) > db.IDX_SPECIAL else ""
+            special = card_info[db.IDX_SKILLS] if len(card_info) > db.IDX_SKILLS else ""
 
             # Name at top
             name_text = self.small_font.render(name[:14], True, (50, 40, 30))

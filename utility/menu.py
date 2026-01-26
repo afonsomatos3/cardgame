@@ -277,7 +277,7 @@ class DeckBuilder:
             attack = card_info[db.IDX_ATTACK]
             health = card_info[db.IDX_HEALTH]
             cost = card_info[db.IDX_COST]
-            special = card_info[db.IDX_SPECIAL] if len(card_info) > db.IDX_SPECIAL else ""
+            special = card_info[db.IDX_SKILLS] if len(card_info) > db.IDX_SKILLS else ""
 
             # Name at top (bigger font)
             name_font = pygame.font.Font(None, 22)

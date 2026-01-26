@@ -8,6 +8,7 @@ import math
 from pathlib import Path
 
 from network import NetworkClient
+from resource_manager import ensure_resources
 
 
 # Screen settings
@@ -61,6 +62,68 @@ def ease_out_back(t: float) -> float:
     c1 = 1.70158
     c3 = c1 + 1
     return 1 + c3 * pow(t - 1, 3) + c1 * pow(t - 1, 2)
+
+
+def should_show_full_text(ability_text: str) -> bool:
+    """Check if ability should show full text (On play, Last Whisper) vs simplified."""
+    if not ability_text:
+        return False
+    first_word = ability_text.split(":")[0].strip().lower()
+    return first_word in ["on play", "last whisper"]
+
+
+def parse_ability(ability_text: str) -> tuple[str, str, str | None]:
+    """Parse ability text to extract name, description, and number.
+    
+    Args:
+        ability_text: Text in format "AbilityName:Description" or "AbilityName"
+        
+    Returns:
+        Tuple of (ability_name, description, extracted_number or None)
+        
+    Examples:
+        "Destructive:Can target Stations" -> 
+            ("Destructive", "Can target Stations", None)
+        "Execute:Instantly kills enemies with 2 or less health" -> 
+            ("Execute", "Instantly kills enemies with X or less health", "2")
+    """
+    if ":" not in ability_text:
+        return (ability_text.strip(), "", None)
+    
+    parts = ability_text.split(":", 1)
+    ability_name = parts[0].strip()
+    description = parts[1].strip() if len(parts) > 1 else ""
+    
+    # Extract first number from description
+    extracted_number = None
+    import re
+    numbers = re.findall(r'\d+', description)
+    if numbers:
+        extracted_number = numbers[0]
+        # Replace number with X in description for hover text
+        description_with_x = re.sub(r'\d+', 'X', description, count=1)
+        return (ability_name, description_with_x, extracted_number)
+    
+    return (ability_name, description, None)
+
+
+def format_ability_short(ability_text: str) -> str:
+    """Format ability text for card display (short version).
+    
+    Args:
+        ability_text: Full ability text
+        
+    Returns:
+        Short format: "AbilityName" or "AbilityName: Number" or full text for special abilities
+    """
+    # Show full text for On play and Last Whisper
+    if should_show_full_text(ability_text):
+        return ability_text
+    
+    ability_name, _, extracted_number = parse_ability(ability_text)
+    if extracted_number:
+        return f"{ability_name}: {extracted_number}"
+    return ability_name
 
 
 class AnimatedValue:
@@ -605,7 +668,7 @@ class LocationPanel:
         self.panel_scale = AnimatedValue(0, speed=14.0)
 
     def _get_card_thumbnail(self, card_id: str, card_info: dict) -> pygame.Surface:
-        """Get card thumbnail."""
+        """Get card thumbnail with simplified ability text."""
         cache_key = f"loc_{card_id}"
         if cache_key in self._card_cache:
             return self._card_cache[cache_key]
@@ -645,6 +708,25 @@ class LocationPanel:
         name_text = tiny_font.render(name, True, (50, 40, 30))
         name_rect = name_text.get_rect(centerx=self.THUMB_WIDTH // 2, top=4)
         thumb.blit(name_text, name_rect)
+
+        # Show simplified ability text if card has skills
+        skills = card_info.get("skills", "")
+        if skills:
+            simplified_text = format_ability_short(skills)
+            ability_font = pygame.font.Font(None, 12)
+            ability_surf = ability_font.render(simplified_text, True, (220, 220, 220))
+            
+            # Create background for ability text
+            ability_bg = pygame.Surface((self.THUMB_WIDTH - 4, 16), pygame.SRCALPHA)
+            pygame.draw.rect(ability_bg, (100, 100, 100, 180), (0, 0, self.THUMB_WIDTH - 4, 16), border_radius=2)
+            pygame.draw.rect(ability_bg, (150, 150, 150, 220), (0, 0, self.THUMB_WIDTH - 4, 16), 1, border_radius=2)
+            
+            # Blit ability text centered in background
+            ability_x = max(0, (ability_bg.get_width() - ability_surf.get_width()) // 2)
+            ability_bg.blit(ability_surf, (ability_x, 2))
+            
+            # Position ability background above stats
+            thumb.blit(ability_bg, (2, self.THUMB_HEIGHT - 33))
 
         stats_y = self.THUMB_HEIGHT - 15
         pygame.draw.circle(thumb, (200, 60, 60), (16, stats_y), 10)
@@ -1299,6 +1381,15 @@ class ThinClient:
     }
 
     def __init__(self, server_url: str = "ws://localhost:8765"):
+        # Extract server host from WebSocket URL for resource download
+        # Example: "ws://localhost:8765" -> "localhost"
+        server_host = server_url.replace("ws://", "").replace("wss://", "").split(":")[0]
+        resource_port = 8766  # Default resource server port
+        
+        # Try to download resources before initializing pygame
+        print("Checking game resources...")
+        ensure_resources(server_host=server_host, server_port=resource_port)
+        
         pygame.init()
         pygame.mixer.init()
         pygame.display.set_caption("WarMasterMind - Online")
@@ -1355,6 +1446,17 @@ class ThinClient:
         self.card_scroll = 0
         self.user_decks = []
         self.available_cards = {}
+        
+        # Deck builder hover tooltip (with delay)
+        self.hovered_card_for_tooltip = None  # Card being hovered in deck builder
+        self.tooltip_ability = None  # (ability_name, full_description, extracted_number)
+        self.hovered_card_start_time = None  # Time when card hover started
+        self.tooltip_delay = 0.75  # Show tooltip after 0.75 seconds
+        
+        # Match hover tooltip (same delay)
+        self.hovered_match_card = None  # Card being hovered in match
+        self.hovered_match_card_start_time = None
+        self.match_card_tooltip_ability = None
 
         self.selected_card = None
         self.selected_location = None
@@ -1776,6 +1878,8 @@ class ThinClient:
         for c in self.hand_cards: c.update(dt)
         self.draw_menu.update(dt); self.location_panel.update(dt); self.combat_selector.update(dt)
         self.ui_anim.update(dt); self._update_particles(dt)
+        self._update_deck_builder_hover()
+        self._update_match_card_hover()
 
     def draw(self):
         self.screen.fill(BG_COLOR); self._draw_particles(self.screen)
@@ -1934,33 +2038,58 @@ class ThinClient:
             thumb_y = deck_list_y + (scrollbar_height - thumb_height) * self.deck_scroll // max_deck_scroll if max_deck_scroll > 0 else deck_list_y
             thumb_rect = pygame.Rect(scrollbar_x + 2, thumb_y, 11, thumb_height)
             pygame.draw.rect(self.screen, (100, 100, 110), thumb_rect, border_radius=4)
+        
+        # Draw tooltip if hovering over a card
+        self._draw_deck_card_tooltip()
 
     def _render_deck_card(self, cid: str) -> pygame.Surface:
+        """Render a deck card at standard size."""
         ck = f"deck_{cid}"
-        if ck in self._card_cache: return self._card_cache[ck]
+        if ck in self._card_cache:
+            return self._card_cache[ck]
+        
         s = pygame.Surface((DECK_CARD_WIDTH, DECK_CARD_HEIGHT), pygame.SRCALPHA)
         pygame.draw.rect(s, (245, 235, 220), (0, 0, DECK_CARD_WIDTH, DECK_CARD_HEIGHT), border_radius=6)
         pygame.draw.rect(s, (139, 90, 43), (0, 0, DECK_CARD_WIDTH, DECK_CARD_HEIGHT), 2, border_radius=6)
+        
         up = os.path.join("resources", "Units", f"{cid}.png")
-        if not os.path.exists(up): up = os.path.join("resources", "Units", f"{cid}.jpg")
+        if not os.path.exists(up):
+            up = os.path.join("resources", "Units", f"{cid}.jpg")
+        
         if os.path.exists(up):
             try:
-                ui = pygame.image.load(up).convert_alpha(); ir = ui.get_rect()
-                sc = min((DECK_CARD_WIDTH - 10) / ir.width, (DECK_CARD_HEIGHT - 55) / ir.height)
-                ns = (int(ir.width * sc), int(ir.height * sc)); ui = pygame.transform.smoothscale(ui, ns)
-                s.blit(ui, ((DECK_CARD_WIDTH - ns[0]) // 2, 22))
-            except: pass
-        ci = self.available_cards.get(cid, {}); tf = pygame.font.Font(None, 16)
-        s.blit(tf.render(ci.get("name", cid)[:14], True, (50, 40, 30)),
-              tf.render(ci.get("name", cid)[:14], True, (50, 40, 30)).get_rect(centerx=DECK_CARD_WIDTH // 2, top=4))
+                ui = pygame.image.load(up).convert_alpha()
+                ir = ui.get_rect()
+                sc = min((DECK_CARD_WIDTH - 10) / ir.width, (DECK_CARD_HEIGHT - 45) / ir.height)
+                ns = (int(ir.width * sc), int(ir.height * sc))
+                ui = pygame.transform.smoothscale(ui, ns)
+                s.blit(ui, ((DECK_CARD_WIDTH - ns[0]) // 2, 18))
+            except:
+                pass
+        
+        ci = self.available_cards.get(cid, {})
+        tf = pygame.font.Font(None, 16)
+        
+        # Card name with background
+        name_surf = tf.render(ci.get("name", cid)[:14], True, (50, 40, 30))
+        name_bg = pygame.Surface((name_surf.get_width() + 4, name_surf.get_height()), pygame.SRCALPHA)
+        pygame.draw.rect(name_bg, (245, 235, 220, 200), (0, 0, name_bg.get_width(), name_bg.get_height()), border_radius=2)
+        pygame.draw.rect(name_bg, (139, 90, 43, 220), (0, 0, name_bg.get_width(), name_bg.get_height()), 1, border_radius=2)
+        name_bg.blit(name_surf, (2, 0))
+        s.blit(name_bg, (max(0, (DECK_CARD_WIDTH - name_bg.get_width()) // 2), 2))
+        
         pygame.draw.circle(s, (70, 130, 180), (14, 14), 10)
         s.blit(tf.render(str(ci.get("cost", 0)), True, WHITE), tf.render(str(ci.get("cost", 0)), True, WHITE).get_rect(center=(14, 14)))
+        
         sy = DECK_CARD_HEIGHT - 14
         pygame.draw.circle(s, (200, 60, 60), (14, sy), 10)
         s.blit(tf.render(str(ci.get("attack", 0)), True, WHITE), tf.render(str(ci.get("attack", 0)), True, WHITE).get_rect(center=(14, sy)))
+        
         pygame.draw.circle(s, (60, 160, 60), (DECK_CARD_WIDTH - 14, sy), 10)
         s.blit(tf.render(str(ci.get("health", 0)), True, WHITE), tf.render(str(ci.get("health", 0)), True, WHITE).get_rect(center=(DECK_CARD_WIDTH - 14, sy)))
-        self._card_cache[ck] = s; return s
+        
+        self._card_cache[ck] = s
+        return s
 
     def _render_deck_card_sized(self, cid: str, width: int, height: int) -> pygame.Surface:
         """Render a deck card with custom size and text."""
@@ -1976,14 +2105,9 @@ class ThinClient:
         tf = pygame.font.Font(None, max(12, width // 8))
         tiny_font = pygame.font.Font(None, max(10, width // 10))
 
-        # Card name at top
-        name = ci.get("name", cid)[:16]
-        name_surf = tf.render(name, True, (50, 40, 30))
-        s.blit(name_surf, name_surf.get_rect(centerx=width // 2, top=4))
-
-        # Unit image (drawn first so badges appear on top)
-        img_top = 22
-        img_height = height - 70  # Leave room for text and stats
+        # Unit image (drawn first so elements appear on top)
+        img_top = 18
+        img_height = height - 50  # Leave room for text and stats
         up = os.path.join("resources", "Units", f"{cid}.png")
         if not os.path.exists(up):
             up = os.path.join("resources", "Units", f"{cid}.jpg")
@@ -1998,39 +2122,45 @@ class ThinClient:
             except:
                 pass
 
+        # Card name at top - overlapped on image with background
+        name = ci.get("name", cid)[:16]
+        name_surf = tf.render(name, True, (50, 40, 30))
+        name_bg = pygame.Surface((name_surf.get_width() + 6, name_surf.get_height() + 2), pygame.SRCALPHA)
+        pygame.draw.rect(name_bg, (245, 235, 220, 200), (0, 0, name_bg.get_width(), name_bg.get_height()), border_radius=3)
+        pygame.draw.rect(name_bg, (139, 90, 43, 220), (0, 0, name_bg.get_width(), name_bg.get_height()), 1, border_radius=3)
+        name_bg.blit(name_surf, (3, 1))
+        s.blit(name_bg, (max(0, (width - name_bg.get_width()) // 2), 2))
+
         # Cost badge (top-left) - drawn AFTER image so it appears on top
         cost_radius = max(8, width // 12)
         pygame.draw.circle(s, (70, 130, 180), (cost_radius + 4, cost_radius + 4), cost_radius)
         cost_text = tiny_font.render(str(ci.get("cost", 0)), True, WHITE)
         s.blit(cost_text, cost_text.get_rect(center=(cost_radius + 4, cost_radius + 4)))
 
-        # Card text/special ability (below image)
-        text_y = img_top + img_height + 2
-        special = ci.get("special", "")
-        if special:
-            # Wrap text to fit card width
+        # Card text/special ability - positioned higher, above stats
+        # Use simplified format: ability name only or "Name: Number" if it has a number
+        text_y = img_top + img_height - 40
+        skills = ci.get("skills", "")
+        if skills:
+            # Use simplified format for display
+            simplified_text = format_ability_short(skills)
+            
+            # Render simplified text
             text_font = pygame.font.Font(None, max(10, width // 11))
-            words = special.split()
-            lines = []
-            current_line = ""
-            max_text_width = width - 8
-            for word in words:
-                test_line = current_line + " " + word if current_line else word
-                if text_font.size(test_line)[0] <= max_text_width:
-                    current_line = test_line
-                else:
-                    if current_line:
-                        lines.append(current_line)
-                    current_line = word
-            if current_line:
-                lines.append(current_line)
-
-            # Draw up to 2 lines of text
-            for i, line in enumerate(lines[:2]):
-                if i == 1 and len(lines) > 2:
-                    line = line[:len(line)-3] + "..."
-                text_surf = text_font.render(line, True, (70, 60, 50))
-                s.blit(text_surf, (4, text_y + i * (text_font.get_height() + 1)))
+            text_surf = text_font.render(simplified_text, True, (220, 220, 220))
+            
+            # Create background for text
+            text_padding = 4
+            text_bg_width = text_surf.get_width() + text_padding * 2
+            text_bg_height = text_surf.get_height() + 2
+            text_bg = pygame.Surface((text_bg_width, text_bg_height), pygame.SRCALPHA)
+            pygame.draw.rect(text_bg, (100, 100, 100, 180), (0, 0, text_bg.get_width(), text_bg.get_height()), border_radius=3)
+            pygame.draw.rect(text_bg, (150, 150, 150, 220), (0, 0, text_bg.get_width(), text_bg.get_height()), 1, border_radius=3)
+            text_bg.blit(text_surf, (text_padding, 1))
+            
+            # Center text on card
+            text_x = max(0, (width - text_bg_width) // 2)
+            s.blit(text_bg, (text_x, text_y))
 
         # Attack/Health stats at bottom
         stats_y = height - 14
@@ -2054,12 +2184,229 @@ class ThinClient:
         self.screen.blit(self.small_font.render("Press ESC to cancel", True, GRAY),
                         self.small_font.render("Press ESC to cancel", True, GRAY).get_rect(center=(self.screen_width // 2, self.screen_height // 2 + 50)))
 
+    def _update_deck_builder_hover(self):
+        """Update which card is being hovered in deck builder with timing delay."""
+        if self.state != STATE_DECK_BUILDER:
+            self.hovered_card_for_tooltip = None
+            self.tooltip_ability = None
+            self.hovered_card_start_time = None
+            return
+        
+        mouse_pos = pygame.mouse.get_pos()
+        
+        # Calculate card grid positions
+        cpr = 5
+        rows = 2
+        deck_panel_width = 310
+        available_width = self.screen_width - 40 - deck_panel_width
+        sp = 10
+        card_w = (available_width - sp * (cpr - 1)) // cpr
+        available_height = self.screen_height - 180
+        max_card_h = (available_height - sp * (rows - 1)) // rows
+        card_h = min(int(card_w * 1.4), max_card_h)
+        
+        # Check if mouse is over any card
+        cards_list = sorted(self.available_cards.keys())
+        vs = self.card_scroll * cpr
+        cards_per_page = rows * cpr
+        
+        for i, cid in enumerate(cards_list[vs:vs + cards_per_page]):
+            r, c = i // cpr, i % cpr
+            x, y = 20 + c * (card_w + sp), 100 + r * (card_h + sp)
+            card_rect = pygame.Rect(x, y, card_w, card_h)
+            
+            if card_rect.collidepoint(mouse_pos):
+                # Same card being hovered - check timing
+                if self.hovered_card_for_tooltip == cid:
+                    elapsed = pygame.time.get_ticks() / 1000.0 - self.hovered_card_start_time
+                    if elapsed >= self.tooltip_delay:
+                        # Show tooltip
+                        skills = self.available_cards.get(cid, {}).get("skills", "")
+                        if skills:
+                            ability_name, description, number = parse_ability(skills)
+                            self.tooltip_ability = (ability_name, description, number)
+                        else:
+                            self.tooltip_ability = None
+                else:
+                    # New card being hovered - start timer
+                    self.hovered_card_for_tooltip = cid
+                    self.hovered_card_start_time = pygame.time.get_ticks() / 1000.0
+                    self.tooltip_ability = None
+                return
+        
+        # No card hovered
+        self.hovered_card_for_tooltip = None
+        self.tooltip_ability = None
+        self.hovered_card_start_time = None
+
+    def _draw_deck_card_tooltip(self):
+        """Draw tooltip for hovered card in deck builder."""
+        if not self.hovered_card_for_tooltip or not self.tooltip_ability:
+            return
+        
+        ability_name, description, number = self.tooltip_ability
+        
+        mouse_pos = pygame.mouse.get_pos()
+        
+        # Tooltip background
+        tooltip_font = pygame.font.Font(None, 18)
+        title_font = pygame.font.Font(None, 22)
+        
+        # Build tooltip text
+        title_surf = title_font.render(ability_name, True, (255, 200, 100))
+        
+        # Wrap description
+        words = description.split()
+        lines = []
+        current_line = ""
+        max_width = 250
+        for word in words:
+            test_line = current_line + " " + word if current_line else word
+            if tooltip_font.size(test_line)[0] <= max_width:
+                current_line = test_line
+            else:
+                if current_line:
+                    lines.append(current_line)
+                current_line = word
+        if current_line:
+            lines.append(current_line)
+        
+        desc_surfs = [tooltip_font.render(line, True, (220, 220, 220)) for line in lines[:3]]  # Max 3 lines
+        
+        # Calculate tooltip size
+        tooltip_width = max(title_surf.get_width(), max([s.get_width() for s in desc_surfs] or [0])) + 20
+        tooltip_height = title_surf.get_height() + sum(s.get_height() for s in desc_surfs) + 20
+        
+        # Position tooltip to the right of mouse, but keep it on screen
+        tooltip_x = mouse_pos[0] + 20
+        tooltip_y = mouse_pos[1] + 10
+        
+        if tooltip_x + tooltip_width > self.screen_width:
+            tooltip_x = mouse_pos[0] - tooltip_width - 10
+        if tooltip_y + tooltip_height > self.screen_height:
+            tooltip_y = self.screen_height - tooltip_height - 10
+        
+        # Draw tooltip background
+        tooltip_rect = pygame.Rect(tooltip_x, tooltip_y, tooltip_width, tooltip_height)
+        pygame.draw.rect(self.screen, (40, 40, 50), tooltip_rect, border_radius=5)
+        pygame.draw.rect(self.screen, (100, 150, 200), tooltip_rect, 2, border_radius=5)
+        
+        # Draw title
+        self.screen.blit(title_surf, (tooltip_x + 10, tooltip_y + 8))
+        
+        # Draw description
+        current_y = tooltip_y + title_surf.get_height() + 12
+        for desc_surf in desc_surfs:
+            self.screen.blit(desc_surf, (tooltip_x + 10, current_y))
+            current_y += desc_surf.get_height() + 2
+
+    def _update_match_card_hover(self):
+        """Update which card is being hovered in match with timing delay."""
+        if self.state != STATE_GAME:
+            self.hovered_match_card = None
+            self.match_card_tooltip_ability = None
+            self.hovered_match_card_start_time = None
+            return
+        
+        mouse_pos = pygame.mouse.get_pos()
+        
+        # Check all cards on battlefield from location panel
+        if hasattr(self.location_panel, '_card_rects'):
+            for card_rect, idx, card in self.location_panel._card_rects:
+                if card_rect.collidepoint(mouse_pos):
+                    card_id = card.get("card_id", "Unknown")
+                    
+                    # Same card being hovered - check timing
+                    if self.hovered_match_card == card_id:
+                        elapsed = pygame.time.get_ticks() / 1000.0 - self.hovered_match_card_start_time
+                        if elapsed >= self.tooltip_delay:
+                            # Show tooltip - get skills from card object or available_cards
+                            skills = card.get("skills", "") or self.available_cards.get(card_id, {}).get("skills", "")
+                            if skills:
+                                ability_name, description, number = parse_ability(skills)
+                                self.match_card_tooltip_ability = (ability_name, description, number)
+                            else:
+                                self.match_card_tooltip_ability = None
+                    else:
+                        # New card being hovered - start timer
+                        self.hovered_match_card = card_id
+                        self.hovered_match_card_start_time = pygame.time.get_ticks() / 1000.0
+                        self.match_card_tooltip_ability = None
+                    return
+        
+        # No card hovered
+        self.hovered_match_card = None
+        self.match_card_tooltip_ability = None
+        self.hovered_match_card_start_time = None
+
+    def _draw_match_card_tooltip(self):
+        """Draw tooltip for hovered card in match."""
+        if not self.hovered_match_card or not self.match_card_tooltip_ability:
+            return
+        
+        ability_name, description, number = self.match_card_tooltip_ability
+        
+        mouse_pos = pygame.mouse.get_pos()
+        
+        # Tooltip background
+        tooltip_font = pygame.font.Font(None, 18)
+        title_font = pygame.font.Font(None, 22)
+        
+        # Build tooltip text
+        title_surf = title_font.render(ability_name, True, (255, 200, 100))
+        
+        # Wrap description
+        words = description.split()
+        lines = []
+        current_line = ""
+        max_width = 250
+        for word in words:
+            test_line = current_line + " " + word if current_line else word
+            if tooltip_font.size(test_line)[0] <= max_width:
+                current_line = test_line
+            else:
+                if current_line:
+                    lines.append(current_line)
+                current_line = word
+        if current_line:
+            lines.append(current_line)
+        
+        desc_surfs = [tooltip_font.render(line, True, (220, 220, 220)) for line in lines[:3]]  # Max 3 lines
+        
+        # Calculate tooltip size
+        tooltip_width = max(title_surf.get_width(), max([s.get_width() for s in desc_surfs] or [0])) + 20
+        tooltip_height = title_surf.get_height() + sum(s.get_height() for s in desc_surfs) + 20
+        
+        # Position tooltip to the right of mouse, but keep it on screen
+        tooltip_x = mouse_pos[0] + 20
+        tooltip_y = mouse_pos[1] + 10
+        
+        if tooltip_x + tooltip_width > self.screen_width:
+            tooltip_x = mouse_pos[0] - tooltip_width - 10
+        if tooltip_y + tooltip_height > self.screen_height:
+            tooltip_y = self.screen_height - tooltip_height - 10
+        
+        # Draw tooltip background
+        tooltip_rect = pygame.Rect(tooltip_x, tooltip_y, tooltip_width, tooltip_height)
+        pygame.draw.rect(self.screen, (40, 40, 50), tooltip_rect, border_radius=5)
+        pygame.draw.rect(self.screen, (100, 150, 200), tooltip_rect, 2, border_radius=5)
+        
+        # Draw title
+        self.screen.blit(title_surf, (tooltip_x + 10, tooltip_y + 8))
+        
+        # Draw description
+        current_y = tooltip_y + title_surf.get_height() + 12
+        for desc_surf in desc_surfs:
+            self.screen.blit(desc_surf, (tooltip_x + 10, current_y))
+            current_y += desc_surf.get_height() + 2
+
     def _draw_game(self):
         if not self.game_state:
             self.screen.blit(self.font.render("Loading...", True, WHITE),
                            self.font.render("Loading...", True, WHITE).get_rect(center=(self.screen_width // 2, self.screen_height // 2))); return
         self._draw_opponent_info(); self._draw_opponent_hand(); self._draw_battlefield(); self._draw_hand(); self._draw_turn_info(); self._draw_deck(); self._draw_reinforcements()
         self.draw_menu.draw(self.screen); self.location_panel.draw(self.screen); self.combat_selector.draw(self.screen)
+        self._draw_match_card_tooltip()
 
     def _draw_match_start_transition(self):
         """Draw the match start transition with player info and role assignment."""
