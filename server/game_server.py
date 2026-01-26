@@ -378,6 +378,55 @@ class GameSession:
                 import traceback
                 traceback.print_exc()
 
+    async def end_match(self, database):
+        """End the match, update player stats, and clean up."""
+        if not self.winner or not self.is_active is False:
+            print(f"[MATCH {self.match_id}] Game is still active or no winner set yet")
+            return
+
+        # Determine winner user ID
+        winner_id = self.attacker_id if self.winner == "attacker" else self.defender_id
+        
+        print(f"[MATCH {self.match_id}] Match ending - Winner: {self.winner} (ID: {winner_id})")
+        
+        # Update database with match result
+        database.end_match(self.match_id, winner_id)
+        
+        # Get updated stats
+        attacker_stats = database.get_user_stats(self.attacker_id)
+        defender_stats = database.get_user_stats(self.defender_id)
+        
+        # Notify both players of final result with updated stats
+        match_result = {
+            "type": "match_result",
+            "winner": self.winner,
+            "match_id": self.match_id,
+            "attacker": {
+                "user_id": self.attacker_id,
+                "username": attacker_stats["username"],
+                "wins": attacker_stats["wins"],
+                "losses": attacker_stats["losses"],
+                "is_winner": self.winner == "attacker"
+            },
+            "defender": {
+                "user_id": self.defender_id,
+                "username": defender_stats["username"],
+                "wins": defender_stats["wins"],
+                "losses": defender_stats["losses"],
+                "is_winner": self.winner == "defender"
+            }
+        }
+        
+        # Send result to both players
+        for user_id, ws in self.connections.items():
+            try:
+                await ws.send(json.dumps(match_result))
+                print(f"[MATCH {self.match_id}] Sent match result to user {user_id}")
+            except ConnectionClosed:
+                print(f"[MATCH {self.match_id}] User {user_id} disconnected before receiving result")
+            except Exception as e:
+                print(f"[MATCH {self.match_id}] Error sending result to user {user_id}: {e}")
+
     async def handle_action(self, user_id: int, action: dict) -> dict:
         """Handle a player action and return result."""
         player = self.get_player_role(user_id)
@@ -660,6 +709,24 @@ class GameServer:
                                     "type": "action_result",
                                     **result
                                 }))
+                                
+                                # Check if game has ended
+                                if game.winner and not game.is_active:
+                                    print(f"[SERVER] Game {match_id} has ended with winner: {game.winner}")
+                                    # End the match, update stats, and notify players
+                                    await game.end_match(self.database)
+                                    
+                                    # Clean up from active games
+                                    if game.attacker_id in self.user_games:
+                                        del self.user_games[game.attacker_id]
+                                    if game.defender_id in self.user_games:
+                                        del self.user_games[game.defender_id]
+                                    
+                                    # Remove from games dict
+                                    if match_id in self.games:
+                                        del self.games[match_id]
+                                    
+                                    print(f"[SERVER] Match {match_id} cleaned up - players can find new matches")
 
                     elif msg_type == "get_decks":
                         decks = self.database.get_user_decks(user_id)

@@ -380,11 +380,25 @@ class DrawMenu:
         health = card_info.get("health", 0)
         cost = card_info.get("cost", 0)
         special = card_info.get("special", "")
+        subtype = card_info.get("subtype", "")
+        species = card_info.get("species", "")
 
         # Name at top
         name_text = self.small_font.render(name[:16], True, (50, 40, 30))
         name_rect = name_text.get_rect(centerx=self.CARD_WIDTH // 2, top=4)
         surf.blit(name_text, name_rect)
+
+        # Subtype and Species below name
+        type_info = []
+        if subtype:
+            type_info.append(subtype)
+        if species:
+            type_info.append(species)
+        
+        if type_info:
+            type_text = self.tiny_font.render(" / ".join(type_info), True, (100, 80, 60))
+            type_rect = type_text.get_rect(centerx=self.CARD_WIDTH // 2, top=24)
+            surf.blit(type_text, type_rect)
 
         # Cost circle (shows turns to arrive)
         pygame.draw.circle(surf, (70, 130, 180), (18, 18), 14)
@@ -1860,6 +1874,28 @@ class ThinClient:
                 if self.draw_menu.is_visible: self.draw_menu.hide()
                 elif self.location_panel.is_visible: self.location_panel.hide()
 
+    def _is_location_accessible(self, location: str) -> bool:
+        """Check if a location should show progress (reachable by either player).
+        
+        Shows progress if the location is adjacent to ANY player's controlled areas.
+        This prevents UI clutter by only showing bars on mutually accessible locations.
+        """
+        if not self.game_state:
+            return False
+        
+        battlefield = self.game_state.get("battlefield", {})
+        
+        # Check if any adjacent location is controlled by EITHER player
+        adjacent_locations = self.ADJACENCY.get(location, [])
+        for adj_loc in adjacent_locations:
+            adj_bf = battlefield.get(adj_loc, {})
+            controller = adj_bf.get("controller")
+            # Show if adjacent area is controlled by either attacker or defender
+            if controller in ["attacker", "defender"]:
+                return True
+        
+        return False
+
     def update(self, dt: float):
         for msg in self.network.process_messages():
             if msg.get("type") == "pending_requests": self.pending_requests = msg.get("incoming", [])
@@ -2546,9 +2582,9 @@ class ThinClient:
             if bf.get("can_see") and ec: self.screen.blit(self.small_font.render(f"Enemy: {ec}", True, RED), (rect.left + 6, cy + 18))
             elif not bf.get("can_see"): self.screen.blit(self.small_font.render("???", True, DARK_GRAY), (rect.left + 6, cy + 18))
 
-            # Draw capture progress for capturable locations
+            # Draw capture progress for capturable locations (only if adjacent to controlled areas)
             cap_info = bf.get("capture_info")
-            if cap_info and cap_info.get("capturable") and not cap_info.get("controller"):
+            if cap_info and cap_info.get("capturable") and self._is_location_accessible(nm):
                 tiny = pygame.font.Font(None, 12)
                 your_role = self.game_state.get("your_role", "attacker")
                 your_power = cap_info.get(f"{your_role}_power", 0)

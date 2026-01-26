@@ -456,22 +456,28 @@ class GameManager:
         """Check if a player can draw a card this phase.
         
         Each player can draw 1 base card per turn.
-        Additionally, for each territory controlled (conquered), they get 1 bonus draw.
+        Additionally, for each territory captured BEYOND their starting 2, they get 1 bonus draw.
         """
-        # Count all controlled territories (any location controlled by the player)
-        territories_controlled = sum(
-            1 for loc in self.LOCATIONS
-            if self.location_control.get(loc) == player
-        )
-        
-        # Total draws available: 1 base + 1 per controlled territory
-        total_draws_available = 1 + territories_controlled
-        
+        # Starting territories don't count toward draw bonus
         if player == Player.ATTACKER:
+            attacker_starting = {"Camp", "Forest"}
+            bonus_territories = sum(
+                1 for loc in self.LOCATIONS
+                if loc not in attacker_starting and self.location_control.get(loc) == player
+            )
+            # Total draws available: 1 base + 1 per bonus territory
+            total_draws_available = 1 + bonus_territories
             # Count total draws used: base draw + bonus draws
             draws_used = (1 if self.attacker_has_drawn else 0) + self.attacker_bonus_draws_used
             return draws_used < total_draws_available
         else:
+            defender_starting = {"Courtyard", "Keep"}
+            bonus_territories = sum(
+                1 for loc in self.LOCATIONS
+                if loc not in defender_starting and self.location_control.get(loc) == player
+            )
+            # Total draws available: 1 base + 1 per bonus territory
+            total_draws_available = 1 + bonus_territories
             # Count total draws used: base draw + bonus draws
             draws_used = (1 if self.defender_has_drawn else 0) + self.defender_bonus_draws_used
             return draws_used < total_draws_available
@@ -668,15 +674,23 @@ class GameManager:
         Returns "attacker" or "defender" indicating who assigns blockers.
         - attacker_zone: attacker is blocker
         - defender_zone: defender is blocker
-        - middle_zone: first_placer is blocker (or None if empty)
+        - middle_zone (neutral): first_placer is blocker
+        - middle_zone (contested): area owner is blocker (defending their territory)
         """
         if zone == "attacker_zone":
             return "attacker"
         elif zone == "defender_zone":
             return "defender"
         elif zone == "middle_zone":
-            zone_data = self.battlefield_cards[location][zone]
-            return zone_data.get("first_placer")  # Could be None
+            # For contested (captured) locations, the current owner always blocks
+            current_owner = self.location_control.get(location)
+            if current_owner is not None:
+                # Area is captured - owner is the blocker
+                return "attacker" if current_owner == Player.ATTACKER else "defender"
+            else:
+                # Neutral area - first placer is blocker
+                zone_data = self.battlefield_cards[location][zone]
+                return zone_data.get("first_placer")  # Could be None
         return None
 
     def get_hand_reinforcements(self, player: Player) -> list:
@@ -1548,21 +1562,18 @@ class GameManager:
         return threshold
 
     def check_captures(self) -> list[tuple[str, Player]]:
-        """Check if any locations are captured.
+        """Check if any locations are captured or recaptured.
 
-        To capture, you need troops in the middle_zone.
+        To capture a NEUTRAL location, you need troops in the middle_zone.
+        To RECAPTURE a controlled location, opponent needs troops in middle_zone.
         Returns list of (location, new_controller) tuples.
         """
         captures = []
 
         for location in self.LOCATIONS:
-            # Can conquer any location that isn't already controlled
-            if self.location_control[location] is not None:
-                continue
-
             mid_zone = self.battlefield_cards[location]["middle_zone"]
 
-            # Must have troops in middle_zone to capture
+            # Must have troops in middle_zone to capture/recapture
             atk_in_middle = len(mid_zone["attacker"]) > 0
             def_in_middle = len(mid_zone["defender"]) > 0
 
@@ -1576,31 +1587,45 @@ class GameManager:
             atk_can_capture = atk_in_middle and atk_power >= atk_threshold
             def_can_capture = def_in_middle and def_power >= def_threshold
 
+            current_owner = self.location_control[location]
+
             # If both can capture simultaneously, the one with more power wins
-            # If tied, location remains contested (no capture)
+            # If tied, location remains with current owner (or neutral if both same power)
             if atk_can_capture and def_can_capture:
                 if atk_power > def_power:
                     self.location_control[location] = Player.ATTACKER
                     captures.append((location, Player.ATTACKER))
                     self._on_location_captured(location, Player.ATTACKER)
-                    print(f"[CAPTURE] Attacker captured {location} (power advantage)!")
+                    if current_owner == Player.DEFENDER:
+                        print(f"[CAPTURE] Attacker recaptured {location} from Defender (power advantage)!")
+                    else:
+                        print(f"[CAPTURE] Attacker captured {location} (power advantage)!")
                 elif def_power > atk_power:
                     self.location_control[location] = Player.DEFENDER
                     captures.append((location, Player.DEFENDER))
                     self._on_location_captured(location, Player.DEFENDER)
-                    print(f"[CAPTURE] Defender captured {location} (power advantage)!")
+                    if current_owner == Player.ATTACKER:
+                        print(f"[CAPTURE] Defender recaptured {location} from Attacker (power advantage)!")
+                    else:
+                        print(f"[CAPTURE] Defender captured {location} (power advantage)!")
                 else:
-                    print(f"[CAPTURE] {location} remains contested - tied power!")
+                    print(f"[CAPTURE] {location} remains with current owner - tied power!")
             elif atk_can_capture:
                 self.location_control[location] = Player.ATTACKER
                 captures.append((location, Player.ATTACKER))
                 self._on_location_captured(location, Player.ATTACKER)
-                print(f"[CAPTURE] Attacker captured {location}!")
+                if current_owner == Player.DEFENDER:
+                    print(f"[CAPTURE] Attacker recaptured {location} from Defender!")
+                else:
+                    print(f"[CAPTURE] Attacker captured {location}!")
             elif def_can_capture:
                 self.location_control[location] = Player.DEFENDER
                 captures.append((location, Player.DEFENDER))
                 self._on_location_captured(location, Player.DEFENDER)
-                print(f"[CAPTURE] Defender captured {location}!")
+                if current_owner == Player.ATTACKER:
+                    print(f"[CAPTURE] Defender recaptured {location} from Attacker!")
+                else:
+                    print(f"[CAPTURE] Defender captured {location}!")
 
         return captures
 
