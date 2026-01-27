@@ -346,6 +346,21 @@ class GameSession:
         has_moved = card.get("has_moved_this_turn", False)
         can_move = (turn_placed < gm.current_turn) and not has_moved
 
+        # Compute effective stats using AbilityProcessor
+        from utility.game_manager import AbilityProcessor
+        effective_attack = AbilityProcessor.get_effective_attack(card)
+        effective_max_health = AbilityProcessor.get_effective_max_health(card)
+
+        # Serialize active effects for client display
+        serialized_effects = []
+        for e in card.get("active_effects", []):
+            serialized_effects.append({
+                "type": e["type"],
+                "value": e["value"],
+                "duration": e["duration"],
+                "source": e.get("source_card_id", ""),
+            })
+
         return {
             "card_id": card.get("card_id"),
             "name": card_info[db.IDX_NAME] if len(card_info) > db.IDX_NAME else "",
@@ -360,6 +375,9 @@ class GameSession:
             "turn_placed": turn_placed,
             "has_moved_this_turn": has_moved,
             "can_move": can_move,  # Computed: can card move this turn?
+            "effective_attack": effective_attack,
+            "effective_max_health": effective_max_health,
+            "active_effects": serialized_effects,
         }
 
     async def broadcast_state(self):

@@ -29,6 +29,7 @@ GOLD = (255, 200, 50)
 # Game states
 STATE_LOGIN = "login"
 STATE_LOBBY = "lobby"
+STATE_SETTINGS = "settings"
 STATE_FRIENDS = "friends"
 STATE_DECK_BUILDER = "deck_builder"
 STATE_MATCHMAKING = "matchmaking"
@@ -682,11 +683,11 @@ class LocationPanel:
         self.panel_scale = AnimatedValue(0, speed=14.0)
 
     def _get_card_thumbnail(self, card_id: str, card_info: dict) -> pygame.Surface:
-        """Get card thumbnail with simplified ability text."""
-        cache_key = f"loc_{card_id}"
-        if cache_key in self._card_cache:
-            return self._card_cache[cache_key]
-
+        """Get card thumbnail with simplified ability text.
+        
+        Shows effective stats (with buffs) if available from server, otherwise base stats.
+        """
+        # Don't cache since stats change with buffs
         thumb = pygame.Surface((self.THUMB_WIDTH, self.THUMB_HEIGHT), pygame.SRCALPHA)
 
         pygame.draw.rect(thumb, (245, 235, 220),
@@ -714,8 +715,14 @@ class LocationPanel:
                 pass
 
         name = card_info.get("name", card_id)[:14]
-        attack = card_info.get("attack", 0)
-        health = card_info.get("health", 0)
+        
+        # Use effective stats from server if available (with buffs), otherwise base stats
+        base_attack = card_info.get("attack", 0)
+        effective_attack = card_info.get("effective_attack", base_attack)
+        
+        base_health = card_info.get("health", 0)
+        effective_max_health = card_info.get("effective_max_health", base_health)
+        current_health = card_info.get("current_health", effective_max_health)
 
         tiny_font = pygame.font.Font(None, 15)
 
@@ -743,15 +750,33 @@ class LocationPanel:
             thumb.blit(ability_bg, (2, self.THUMB_HEIGHT - 33))
 
         stats_y = self.THUMB_HEIGHT - 15
-        pygame.draw.circle(thumb, (200, 60, 60), (16, stats_y), 10)
-        atk_text = tiny_font.render(str(attack), True, WHITE)
+        
+        # Attack circle - dark red, darker red for bigger buffs
+        buff_amount = effective_attack - base_attack
+        if buff_amount > 0:
+            # Calculate darkness based on buff amount (0-255 range, darker = higher values)
+            darkness = min(255, 100 + (buff_amount * 30))  # Darker with bigger buffs
+            atk_color = (darkness, 40, 40)
+        else:
+            atk_color = (150, 50, 50)  # Standard dark red for no buff
+        
+        pygame.draw.circle(thumb, atk_color, (16, stats_y), 10)
+        atk_text = tiny_font.render(str(effective_attack), True, WHITE)
         thumb.blit(atk_text, atk_text.get_rect(center=(16, stats_y)))
 
-        pygame.draw.circle(thumb, (60, 160, 60), (self.THUMB_WIDTH - 16, stats_y), 10)
-        hp_text = tiny_font.render(str(health), True, WHITE)
+        # Health: show only current health, color differently if injured
+        if current_health >= effective_max_health:
+            hp_color = (60, 160, 60)  # Green for healthy
+        elif current_health > effective_max_health * 0.5:
+            hp_color = (255, 165, 0)  # Orange for moderate injury
+        else:
+            hp_color = (200, 60, 60)  # Red for severe injury
+        
+        pygame.draw.circle(thumb, hp_color, (self.THUMB_WIDTH - 16, stats_y), 10)
+        # Show only current health (not current/max format)
+        hp_text = tiny_font.render(str(current_health), True, WHITE)
         thumb.blit(hp_text, hp_text.get_rect(center=(self.THUMB_WIDTH - 16, stats_y)))
 
-        self._card_cache[cache_key] = thumb
         return thumb
 
     def _get_card_back(self) -> pygame.Surface:
@@ -894,7 +919,8 @@ class LocationPanel:
                 break
 
             card_id = card.get("card_id", "Unknown")
-            card_info = self.cards_info.get(card_id, card)
+            # Merge database info with server card data (server data has effective stats and current health)
+            card_info = {**self.cards_info.get(card_id, {}), **card}
 
             card_rect = pygame.Rect(card_x, y, self.THUMB_WIDTH, self.THUMB_HEIGHT)
             self._card_rects.append((card_rect, i, card))
@@ -960,7 +986,8 @@ class LocationPanel:
                 break
 
             card_id = card.get("card_id", "Unknown")
-            card_info = self.cards_info.get(card_id, card)
+            # Merge database info with server card data (server data has effective stats and current health)
+            card_info = {**self.cards_info.get(card_id, {}), **card}
 
             if visible:
                 thumb = self._get_card_thumbnail(card_id, card_info)
@@ -1098,10 +1125,7 @@ class CombatSelector:
 
     def _render_card(self, card_id: str, card_info: dict) -> pygame.Surface:
         """Render a card for combat."""
-        cache_key = f"combat_{card_id}"
-        if cache_key in self._card_cache:
-            return self._card_cache[cache_key]
-
+        # Don't cache - stats can change due to buffs
         surf = pygame.Surface((self.CARD_WIDTH, self.CARD_HEIGHT), pygame.SRCALPHA)
 
         pygame.draw.rect(surf, (245, 235, 220),
@@ -1129,8 +1153,11 @@ class CombatSelector:
                 pass
 
         name = card_info.get("name", card_id)[:12]
-        attack = card_info.get("attack", 0)
-        health = card_info.get("health", 0)
+        # Use effective stats from server (with buffs applied), fall back to base stats
+        effective_attack = card_info.get("effective_attack", card_info.get("attack", 0))
+        base_attack = card_info.get("attack", 0)
+        effective_max_health = card_info.get("effective_max_health", card_info.get("health", 0))
+        current_health = card_info.get("current_health", card_info.get("health", 0))
 
         tiny_font = pygame.font.Font(None, 16)
 
@@ -1139,15 +1166,32 @@ class CombatSelector:
         surf.blit(name_text, name_rect)
 
         stats_y = self.CARD_HEIGHT - 14
-        pygame.draw.circle(surf, (200, 60, 60), (14, stats_y), 10)
-        atk_text = tiny_font.render(str(attack), True, WHITE)
+        
+        # Attack circle - dark red, darker red for bigger buffs
+        buff_amount = effective_attack - base_attack
+        if buff_amount > 0:
+            # Calculate darkness based on buff amount (0-255 range, darker = higher values)
+            darkness = min(255, 100 + (buff_amount * 30))  # Darker with bigger buffs
+            attack_color = (darkness, 40, 40)
+        else:
+            attack_color = (150, 50, 50)  # Standard dark red for no buff
+        
+        pygame.draw.circle(surf, attack_color, (14, stats_y), 10)
+        atk_text = tiny_font.render(str(effective_attack), True, WHITE)
         surf.blit(atk_text, atk_text.get_rect(center=(14, stats_y)))
 
-        pygame.draw.circle(surf, (60, 160, 60), (self.CARD_WIDTH - 14, stats_y), 10)
-        hp_text = tiny_font.render(str(health), True, WHITE)
+        # Health circle - green if healthy, orange/red if injured
+        if current_health >= effective_max_health:
+            health_color = (60, 160, 60)
+        elif current_health > effective_max_health * 0.5:
+            health_color = (255, 165, 0)  # Orange
+        else:
+            health_color = (200, 60, 60)  # Red
+        
+        pygame.draw.circle(surf, health_color, (self.CARD_WIDTH - 14, stats_y), 10)
+        hp_text = tiny_font.render(str(current_health), True, WHITE)
         surf.blit(hp_text, hp_text.get_rect(center=(self.CARD_WIDTH - 14, stats_y)))
 
-        self._card_cache[cache_key] = surf
         return surf
 
     def show(self, location_name: str, zone_name: str, attacker_cards: list,
@@ -1227,7 +1271,8 @@ class CombatSelector:
         for i, card in enumerate(self.attacker_cards):
             card_x = atk_start_x + i * (self.CARD_WIDTH + spacing)
             card_id = card.get("card_id", "Unknown")
-            card_info = self.cards_info.get(card_id, card)
+            # Merge database info with server card data (server data has effective stats and current health)
+            card_info = {**self.cards_info.get(card_id, {}), **card}
 
             card_rect = pygame.Rect(card_x, atk_y, self.CARD_WIDTH, self.CARD_HEIGHT)
             self._attacker_rects.append((card_rect, i))
@@ -1269,7 +1314,8 @@ class CombatSelector:
         for i, card in enumerate(self.defender_cards):
             card_x = atk_start_x + i * (self.CARD_WIDTH + spacing)
             card_id = card.get("card_id", "Unknown")
-            card_info = self.cards_info.get(card_id, card)
+            # Merge database info with server card data (server data has effective stats and current health)
+            card_info = {**self.cards_info.get(card_id, {}), **card}
 
             card_rect = pygame.Rect(card_x, def_y, self.CARD_WIDTH, self.CARD_HEIGHT)
             self._defender_rects.append((card_rect, i))
@@ -1366,6 +1412,198 @@ class CombatSelector:
         self.screen_height = screen_height
         self.x = (screen_width - self.width) // 2
         self.y = (screen_height - self.height) // 2
+
+
+class SettingsUI:
+    """Settings panel for audio and resolution options."""
+
+    def __init__(self, screen_width: int, screen_height: int):
+        self.screen_width = screen_width
+        self.screen_height = screen_height
+        self.is_visible = False
+
+        self.width = 500
+        self.height = 400
+        self.x = (screen_width - self.width) // 2
+        self.y = (screen_height - self.height) // 2
+
+        self.font = pygame.font.Font(None, 32)
+        self.small_font = pygame.font.Font(None, 24)
+
+        # Settings
+        self.master_volume = 0.7  # 0.0 to 1.0
+        self.music_volume = 0.7  # 0.0 to 1.0
+        self.music_muted = False
+        
+        # Resolution options
+        self.resolutions = [
+            (1024, 576),
+            (1280, 720),
+            (1600, 900),
+            (1920, 1080),
+        ]
+        self.current_resolution_index = 1  # Default 1280x720
+
+        # UI buttons and sliders
+        self._init_buttons()
+
+    def _init_buttons(self):
+        """Initialize button rects."""
+        self.close_button = pygame.Rect(self.x + self.width - 35, self.y + 8, 28, 28)
+        
+        # Volume sliders
+        self.master_volume_slider_bg = pygame.Rect(self.x + 150, self.y + 80, 300, 15)
+        self.music_volume_slider_bg = pygame.Rect(self.x + 150, self.y + 140, 300, 15)
+        
+        # Mute button
+        self.mute_button = pygame.Rect(self.x + 150, self.y + 195, 300, 35)
+        
+        # Resolution buttons
+        self.resolution_buttons = []
+        for i, res in enumerate(self.resolutions):
+            x = self.x + 150 + (i % 2) * 155
+            y = self.y + 260 + (i // 2) * 40
+            self.resolution_buttons.append(pygame.Rect(x, y, 140, 35))
+
+    def show(self):
+        """Show settings panel."""
+        self.is_visible = True
+
+    def hide(self):
+        """Hide settings panel."""
+        self.is_visible = False
+
+    def handle_click(self, pos: tuple) -> str | None:
+        """Handle click. Returns 'close' if closed, 'resolution_changed' if resolution changed."""
+        if not self.is_visible:
+            return None
+
+        # Close button
+        if self.close_button.collidepoint(pos):
+            self.hide()
+            return "close"
+
+        # Master volume slider
+        if self.master_volume_slider_bg.collidepoint(pos):
+            relative_x = pos[0] - self.master_volume_slider_bg.x
+            self.master_volume = max(0, min(1, relative_x / self.master_volume_slider_bg.width))
+            pygame.mixer.music.set_volume(self.master_volume)
+            return None
+
+        # Music volume slider
+        if self.music_volume_slider_bg.collidepoint(pos):
+            relative_x = pos[0] - self.music_volume_slider_bg.x
+            self.music_volume = max(0, min(1, relative_x / self.music_volume_slider_bg.width))
+            return None
+
+        # Mute button
+        if self.mute_button.collidepoint(pos):
+            self.music_muted = not self.music_muted
+            if self.music_muted:
+                pygame.mixer.music.pause()
+            else:
+                pygame.mixer.music.unpause()
+            return None
+
+        # Resolution buttons
+        for i, btn_rect in enumerate(self.resolution_buttons):
+            if btn_rect.collidepoint(pos):
+                self.current_resolution_index = i
+                return "resolution_changed"
+
+        # Click outside panel
+        panel_rect = pygame.Rect(self.x, self.y, self.width, self.height)
+        if not panel_rect.collidepoint(pos):
+            self.hide()
+            return "close"
+
+        return None
+
+    def get_selected_resolution(self):
+        """Get currently selected resolution."""
+        return self.resolutions[self.current_resolution_index]
+
+    def draw(self, screen: pygame.Surface):
+        """Draw settings panel."""
+        if not self.is_visible:
+            return
+
+        # Overlay
+        overlay = pygame.Surface((self.screen_width, self.screen_height), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, 150))
+        screen.blit(overlay, (0, 0))
+
+        # Panel background
+        pygame.draw.rect(screen, (50, 50, 60), pygame.Rect(self.x, self.y, self.width, self.height), border_radius=12)
+        pygame.draw.rect(screen, (100, 100, 120), pygame.Rect(self.x, self.y, self.width, self.height), 3, border_radius=12)
+
+        # Title
+        title = self.font.render("Settings", True, WHITE)
+        screen.blit(title, title.get_rect(center=(self.x + self.width // 2, self.y + 20)))
+
+        # Close button
+        pygame.draw.rect(screen, (150, 50, 50), self.close_button, border_radius=4)
+        close_text = self.small_font.render("X", True, WHITE)
+        screen.blit(close_text, close_text.get_rect(center=self.close_button.center))
+
+        # Master Volume
+        vol_label = self.small_font.render("Master Volume:", True, (200, 200, 200))
+        screen.blit(vol_label, (self.x + 20, self.y + 70))
+        
+        pygame.draw.rect(screen, (60, 60, 70), self.master_volume_slider_bg, border_radius=8)
+        pygame.draw.rect(screen, (100, 150, 200), self.master_volume_slider_bg, 2, border_radius=8)
+        
+        slider_fill_width = self.master_volume * self.master_volume_slider_bg.width
+        pygame.draw.rect(screen, (100, 200, 255), 
+                        (self.master_volume_slider_bg.x, self.master_volume_slider_bg.y, 
+                         slider_fill_width, self.master_volume_slider_bg.height), border_radius=8)
+        
+        vol_text = self.small_font.render(f"{int(self.master_volume * 100)}%", True, WHITE)
+        screen.blit(vol_text, (self.x + 460, self.y + 70))
+
+        # Music Volume
+        mus_label = self.small_font.render("Music Volume:", True, (200, 200, 200))
+        screen.blit(mus_label, (self.x + 20, self.y + 130))
+        
+        pygame.draw.rect(screen, (60, 60, 70), self.music_volume_slider_bg, border_radius=8)
+        pygame.draw.rect(screen, (100, 150, 200), self.music_volume_slider_bg, 2, border_radius=8)
+        
+        mus_slider_fill_width = self.music_volume * self.music_volume_slider_bg.width
+        pygame.draw.rect(screen, (100, 200, 255), 
+                        (self.music_volume_slider_bg.x, self.music_volume_slider_bg.y, 
+                         mus_slider_fill_width, self.music_volume_slider_bg.height), border_radius=8)
+        
+        mus_text = self.small_font.render(f"{int(self.music_volume * 100)}%", True, WHITE)
+        screen.blit(mus_text, (self.x + 460, self.y + 130))
+
+        # Mute button
+        mute_color = (100, 150, 100) if self.music_muted else (150, 100, 100)
+        pygame.draw.rect(screen, mute_color, self.mute_button, border_radius=5)
+        pygame.draw.rect(screen, (200, 150, 150), self.mute_button, 2, border_radius=5)
+        mute_text = self.small_font.render("Mute Music" if not self.music_muted else "Unmute Music", True, WHITE)
+        screen.blit(mute_text, mute_text.get_rect(center=self.mute_button.center))
+
+        # Resolution header
+        res_label = self.small_font.render("Resolution:", True, (200, 200, 200))
+        screen.blit(res_label, (self.x + 20, self.y + 245))
+
+        # Resolution buttons
+        for i, (btn_rect, res) in enumerate(zip(self.resolution_buttons, self.resolutions)):
+            is_selected = i == self.current_resolution_index
+            btn_color = (100, 150, 100) if is_selected else (80, 80, 90)
+            pygame.draw.rect(screen, btn_color, btn_rect, border_radius=5)
+            pygame.draw.rect(screen, (150, 200, 150) if is_selected else (120, 120, 140), btn_rect, 2, border_radius=5)
+            
+            res_text = self.small_font.render(f"{res[0]}x{res[1]}", True, WHITE)
+            screen.blit(res_text, res_text.get_rect(center=btn_rect.center))
+
+    def resize(self, screen_width: int, screen_height: int):
+        """Handle screen resize."""
+        self.screen_width = screen_width
+        self.screen_height = screen_height
+        self.x = (screen_width - self.width) // 2
+        self.y = (screen_height - self.height) // 2
+        self._init_buttons()
 
 
 class ThinClient:
@@ -1489,6 +1727,7 @@ class ThinClient:
         self.draw_menu = DrawMenu(self.screen_width, self.screen_height)
         self.location_panel = LocationPanel(self.screen_width, self.screen_height)
         self.combat_selector = CombatSelector(self.screen_width, self.screen_height)
+        self.settings_ui = SettingsUI(self.screen_width, self.screen_height)
 
         self.ui_anim = UIAnimation()
         self.turn_flash = 0
@@ -1665,6 +1904,7 @@ class ThinClient:
                 self.draw_menu.resize(event.w, event.h)
                 self.location_panel.resize(event.w, event.h)
                 self.combat_selector.resize(event.w, event.h)
+                self.settings_ui.resize(event.w, event.h)
                 # Clear sized deck card cache on resize
                 self._card_cache = {k: v for k, v in self._card_cache.items() if not k.startswith("deck_") or k.count("_") < 3}
             elif event.type == pygame.MOUSEMOTION: self._handle_mouse_motion(event.pos)
@@ -1725,6 +1965,16 @@ class ThinClient:
                     self.focused_hand_card = new_focus
 
     def _handle_click(self, pos):
+        if self.settings_ui.is_visible:
+            r = self.settings_ui.handle_click(pos)
+            if r == "resolution_changed":
+                new_res = self.settings_ui.get_selected_resolution()
+                self.screen = pygame.display.set_mode(new_res, pygame.RESIZABLE)
+                self.screen_width, self.screen_height = new_res
+                self._handle_resize()
+            elif r == "close":
+                self.state = STATE_LOBBY
+            return
         if self.draw_menu.is_visible:
             r = self.draw_menu.handle_click(pos)
             if r and r != "close": self.network.draw_card(r)
@@ -1741,6 +1991,7 @@ class ThinClient:
             return
         if self.state == STATE_LOGIN: self._handle_login_click(pos)
         elif self.state == STATE_LOBBY: self._handle_lobby_click(pos)
+        elif self.state == STATE_SETTINGS: pass  # Settings handled above
         elif self.state == STATE_FRIENDS: self._handle_friends_click(pos)
         elif self.state == STATE_DECK_BUILDER: self._handle_deck_builder_click(pos)
         elif self.state == STATE_GAME: self._handle_game_click(pos)
@@ -1752,6 +2003,14 @@ class ThinClient:
             for name, rect in self.locations.items():
                 if rect.collidepoint(pos): self.network.place_card(self.dragging_card.card_id, name); break
             self.dragging_card.return_to_position(); self.dragging_card = None
+
+    def _handle_resize(self):
+        """Handle screen resize event."""
+        self.draw_menu.resize(self.screen_width, self.screen_height)
+        self.location_panel.resize(self.screen_width, self.screen_height)
+        self.combat_selector.resize(self.screen_width, self.screen_height)
+        self.settings_ui.resize(self.screen_width, self.screen_height)
+        self._setup_locations()
 
     def _handle_login_click(self, pos):
         ur = pygame.Rect(self.screen_width // 2 - 150, 280, 300, 40)
@@ -1768,6 +2027,7 @@ class ThinClient:
         if pygame.Rect(self.screen_width // 2 - 100, 300, 200, 50).collidepoint(pos): self.network.find_match(); self.state = STATE_MATCHMAKING
         elif pygame.Rect(self.screen_width // 2 - 100, 370, 200, 50).collidepoint(pos): self.state = STATE_FRIENDS; self.network.get_friends(); self.network.send({"type": "get_pending_requests"})
         elif pygame.Rect(self.screen_width // 2 - 100, 440, 200, 50).collidepoint(pos): self.state = STATE_DECK_BUILDER; self.network.get_decks(); self.network.get_cards()
+        elif pygame.Rect(self.screen_width - 160, 20, 140, 40).collidepoint(pos): self.state = STATE_SETTINGS; self.settings_ui.show()
 
     def _handle_friends_click(self, pos):
         if pygame.Rect(20, 20, 100, 40).collidepoint(pos): self.state = STATE_LOBBY; return
@@ -1824,6 +2084,8 @@ class ThinClient:
 
     def _handle_game_click(self, pos):
         if not self.game_state: return
+        # Don't allow opening location panel if it's already visible (prevents flickering)
+        if self.location_panel.is_visible: return
         for card in reversed(self.hand_cards):
             if card.contains_point(pos): card.start_drag(pos); self.dragging_card = card; return
         for name, rect in self.locations.items():
@@ -1867,6 +2129,8 @@ class ThinClient:
             if event.key == pygame.K_ESCAPE: self.state = STATE_LOBBY
             elif event.key == pygame.K_BACKSPACE: self.friend_input = self.friend_input[:-1]
             elif event.unicode.isprintable() and len(event.unicode) == 1 and len(self.friend_input) < 20: self.friend_input += event.unicode
+        elif self.state == STATE_SETTINGS:
+            if event.key == pygame.K_ESCAPE: self.state = STATE_LOBBY; self.settings_ui.hide()
         elif self.state == STATE_DECK_BUILDER and event.key == pygame.K_ESCAPE: self.state = STATE_LOBBY
         elif event.key == pygame.K_ESCAPE:
             if self.state == STATE_MATCHMAKING: self.network.cancel_match(); self.state = STATE_LOBBY
@@ -1921,12 +2185,17 @@ class ThinClient:
         self.screen.fill(BG_COLOR); self._draw_particles(self.screen)
         if self.state == STATE_LOGIN: self._draw_login()
         elif self.state == STATE_LOBBY: self._draw_lobby()
+        elif self.state == STATE_SETTINGS: self._draw_lobby()  # Draw lobby background with settings overlay
         elif self.state == STATE_FRIENDS: self._draw_friends()
         elif self.state == STATE_DECK_BUILDER: self._draw_deck_builder()
         elif self.state == STATE_MATCHMAKING: self._draw_matchmaking()
         elif self.state == STATE_MATCH_START: self._draw_match_start_transition()
         elif self.state in [STATE_GAME, STATE_COMBAT_SELECT]: self._draw_game()
         elif self.state == STATE_GAME_OVER: self._draw_game_over()
+        
+        # Draw settings overlay if visible
+        self.settings_ui.draw(self.screen)
+        
         if self.error_message:
             es = self.font.render(self.error_message, True, RED)
             er = es.get_rect(center=(self.screen_width // 2, 50))
@@ -1974,6 +2243,11 @@ class ThinClient:
                                (pygame.Rect(self.screen_width // 2 - 100, 440, 200, 50), "Deck Builder", (130, 100, 70))]:
             pygame.draw.rect(self.screen, col, rect, border_radius=8)
             self.screen.blit(self.font.render(txt, True, WHITE), self.font.render(txt, True, WHITE).get_rect(center=rect.center))
+        
+        # Settings button
+        settings_rect = pygame.Rect(self.screen_width - 160, 20, 140, 40)
+        pygame.draw.rect(self.screen, (100, 100, 120), settings_rect, border_radius=8)
+        self.screen.blit(self.small_font.render("⚙ Settings", True, WHITE), self.small_font.render("⚙ Settings", True, WHITE).get_rect(center=settings_rect.center))
 
     def _draw_friends(self):
         br = pygame.Rect(20, 20, 100, 40); pygame.draw.rect(self.screen, (100, 70, 70), br, border_radius=5)

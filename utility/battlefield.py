@@ -2,7 +2,11 @@
 
 import os
 import pygame
-from utility.game_manager import Player
+from utility.game_manager import (
+    Player, AbilityProcessor,
+    EFFECT_AURA_ATK, EFFECT_AURA_HP, EFFECT_POISON, EFFECT_STUN, EFFECT_WEAKEN,
+    EFFECT_LIFESTEAL,
+)
 import utility.cards_database as db
 
 
@@ -587,12 +591,62 @@ class LocationPanel:
         self._card_rects: list[pygame.Rect] = []  # Track clickable card areas
         self._move_buttons: list[tuple[pygame.Rect, str]] = []  # (rect, destination)
 
-    def _get_card_thumbnail(self, card_id: str, card_info: list) -> pygame.Surface:
-        """Get or create a thumbnail image for a card."""
-        if card_id in self._card_cache:
-            return self._card_cache[card_id]
+    def _draw_effect_overlay(self, screen: pygame.Surface, card_data: dict,
+                             card_x: int, card_y: int):
+        """Draw visual indicators for active effects on a card thumbnail.
+        
+        This draws status effect icons and highlights for buffs. The actual stat
+        values are already drawn in the thumbnail, so we don't redraw them here.
+        """
+        effects = card_data.get("active_effects", [])
+        
+        # Draw small status icons in top-right corner
+        effect_types_present = set(e["type"] for e in effects)
+        
+        icon_x = card_x + self.THUMB_WIDTH - 8
+        icon_y = card_y + 4
+        icon_size = 6
 
-        # Create thumbnail surface
+        if EFFECT_STUN in effect_types_present:
+            # Yellow circle for stun
+            pygame.draw.circle(screen, (255, 220, 50), (icon_x, icon_y), icon_size)
+            icon_y += icon_size * 2 + 2
+
+        if EFFECT_POISON in effect_types_present:
+            # Green circle for poison
+            pygame.draw.circle(screen, (50, 200, 50), (icon_x, icon_y), icon_size)
+            icon_y += icon_size * 2 + 2
+
+        if EFFECT_WEAKEN in effect_types_present:
+            # Red circle for weaken
+            pygame.draw.circle(screen, (200, 50, 50), (icon_x, icon_y), icon_size)
+            icon_y += icon_size * 2 + 2
+
+        if EFFECT_LIFESTEAL in effect_types_present:
+            # Purple circle for lifesteal
+            pygame.draw.circle(screen, (180, 50, 200), (icon_x, icon_y), icon_size)
+            icon_y += icon_size * 2 + 2
+
+        # Blue glow border for any aura buff (visible buff to allies)
+        has_aura = any(e["type"] in (EFFECT_AURA_ATK, EFFECT_AURA_HP) for e in effects)
+        if has_aura:
+            glow = pygame.Surface(
+                (self.THUMB_WIDTH + 4, self.THUMB_HEIGHT + 4), pygame.SRCALPHA)
+            pygame.draw.rect(glow, (100, 150, 255, 80),
+                           (0, 0, self.THUMB_WIDTH + 4, self.THUMB_HEIGHT + 4),
+                           2, border_radius=6)
+            screen.blit(glow, (card_x - 2, card_y - 2))
+
+    def _get_card_thumbnail(self, card_id: str, card_info: list, card_data: dict = None) -> pygame.Surface:
+        """Get a thumbnail image for a card, including current stats and buffs.
+        
+        Args:
+            card_id: Card ID
+            card_info: Card info list from database
+            card_data: Full card data dict (with current_health, active_effects, etc.)
+                       If None, will use base stats only.
+        """
+        # Create thumbnail surface - don't cache since stats can change
         thumb = pygame.Surface((self.THUMB_WIDTH, self.THUMB_HEIGHT), pygame.SRCALPHA)
 
         # Card background
@@ -624,10 +678,20 @@ class LocationPanel:
         # Card name at top
         if card_info:
             name = card_info[db.IDX_NAME] if len(card_info) > db.IDX_NAME else card_id
-            attack = card_info[db.IDX_ATTACK] if len(card_info) > db.IDX_ATTACK else 0
-            health = card_info[db.IDX_HEALTH] if len(card_info) > db.IDX_HEALTH else 0
+            base_attack = card_info[db.IDX_ATTACK] if len(card_info) > db.IDX_ATTACK else 0
+            base_health = card_info[db.IDX_HEALTH] if len(card_info) > db.IDX_HEALTH else 0
             cost = card_info[db.IDX_COST] if len(card_info) > db.IDX_COST else 0
             special = card_info[db.IDX_SKILLS] if len(card_info) > db.IDX_SKILLS else ""
+
+            # Get effective stats from card_data if available
+            if card_data:
+                effective_attack = AbilityProcessor.get_effective_attack(card_data)
+                effective_max_health = AbilityProcessor.get_effective_max_health(card_data)
+                current_health = card_data.get("current_health", base_health)
+            else:
+                effective_attack = base_attack
+                effective_max_health = base_health
+                current_health = base_health
 
             tiny_font = pygame.font.Font(None, 14)
             micro_font = pygame.font.Font(None, 11)
@@ -643,15 +707,34 @@ class LocationPanel:
             cost_rect = cost_text.get_rect(center=(12, 12))
             thumb.blit(cost_text, cost_rect)
 
-            # Stats at bottom
+            # Stats at bottom - show effective attack and current/max health
             stats_y = self.THUMB_HEIGHT - 14
-            pygame.draw.circle(thumb, (200, 60, 60), (14, stats_y), 8)
-            atk_text = tiny_font.render(str(attack), True, (255, 255, 255))
+            
+            # Attack circle - show effective attack (green if buffed, red if weakened)
+            atk_color = (200, 60, 60)  # Default red
+            if effective_attack > base_attack:
+                atk_color = (60, 200, 60)  # Green if buffed
+            elif effective_attack < base_attack:
+                atk_color = (200, 100, 100)  # Lighter red if weakened
+            pygame.draw.circle(thumb, atk_color, (14, stats_y), 8)
+            atk_text = tiny_font.render(str(effective_attack), True, (255, 255, 255))
             thumb.blit(atk_text, atk_text.get_rect(center=(14, stats_y)))
 
-            pygame.draw.circle(thumb, (60, 160, 60), (self.THUMB_WIDTH - 14, stats_y), 8)
-            hp_text = tiny_font.render(str(health), True, (255, 255, 255))
-            thumb.blit(hp_text, hp_text.get_rect(center=(self.THUMB_WIDTH - 14, stats_y)))
+            # Health circle - show current/max health
+            # Green if full HP, yellow if damaged, red if critical
+            if current_health >= effective_max_health:
+                hp_color = (60, 160, 60)  # Green if full
+            elif current_health > effective_max_health // 2:
+                hp_color = (200, 150, 60)  # Yellow if damaged
+            else:
+                hp_color = (200, 60, 60)  # Red if critical
+            pygame.draw.circle(thumb, hp_color, (self.THUMB_WIDTH - 14, stats_y), 8)
+            
+            # Show "current/max" format for health
+            hp_text_str = f"{current_health}/{effective_max_health}"
+            hp_text = pygame.font.Font(None, 11).render(hp_text_str, True, (255, 255, 255))
+            hp_rect = hp_text.get_rect(center=(self.THUMB_WIDTH - 14, stats_y))
+            thumb.blit(hp_text, hp_rect)
 
             # Special text area (if card has special ability)
             if special:
@@ -680,7 +763,6 @@ class LocationPanel:
                     text_rect = special_text.get_rect(centerx=self.THUMB_WIDTH // 2, y=special_y + 4)
                     thumb.blit(special_text, text_rect)
 
-        self._card_cache[card_id] = thumb
         return thumb
 
     def _get_card_back_thumbnail(self) -> pygame.Surface:
@@ -829,12 +911,16 @@ class LocationPanel:
                 card_id = card_data.get("card_id", "Unknown")
                 card_info = card_data.get("card_info", [])
                 is_tapped = card_data.get("is_tapped", False)
-                thumb = self._get_card_thumbnail(card_id, card_info)
+                thumb = self._get_card_thumbnail(card_id, card_info, card_data)
             else:
                 is_tapped = False
                 thumb = self._get_card_back_thumbnail()
 
             screen.blit(thumb, (card_x, y))
+
+            # Draw effect overlays (aura glow, status icons, effective stats)
+            if visible:
+                self._draw_effect_overlay(screen, card_data, card_x, y)
 
             # Draw tapped indicator for visible cards
             if visible and is_tapped:
@@ -867,7 +953,7 @@ class LocationPanel:
             card_id = card_data.get("card_id", "Unknown")
             card_info = card_data.get("card_info", [])
             is_tapped = card_data.get("is_tapped", False)
-            thumb = self._get_card_thumbnail(card_id, card_info)
+            thumb = self._get_card_thumbnail(card_id, card_info, card_data)
 
             # Track card rect for click detection
             card_rect = pygame.Rect(card_x, y, self.THUMB_WIDTH, self.THUMB_HEIGHT)
@@ -881,6 +967,9 @@ class LocationPanel:
                 screen.blit(highlight, (card_x - 3, y - 3))
 
             screen.blit(thumb, (card_x, y))
+
+            # Draw effect overlays (aura glow, status icons, effective stats)
+            self._draw_effect_overlay(screen, card_data, card_x, y)
 
             # Draw tapped indicator (gray overlay with "TAPPED" text)
             if is_tapped:

@@ -3,14 +3,14 @@
 import pygame
 import sys
 
-from game_manager import GameManager, Player
-from card import Card, set_card_scale
-from hand_manager import HandManager
-from battlefield import Battlefield, LocationPanel
-from ui import TurnUI, DeckUI, DrawMenu, ReinforcementUI, CombatLogUI, GameOverUI
-from menu import MainMenu, DeckBuilder
-from audio_manager import AudioManager
-import cards_database as db
+from utility.game_manager import GameManager, Player
+from utility.card import Card, set_card_scale
+from utility.hand_manager import HandManager
+from utility.battlefield import Battlefield, LocationPanel
+from utility.ui import TurnUI, DeckUI, DrawMenu, ReinforcementUI, CombatLogUI, GameOverUI
+from utility.menu import MainMenu, DeckBuilder
+from utility.audio_manager import AudioManager
+import utility.cards_database as db
 
 
 # Screen settings

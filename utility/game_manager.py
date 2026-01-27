@@ -18,6 +18,59 @@ class GamePhase(Enum):
     COMBAT_DAMAGE = 3
 
 
+# ========== EFFECT TYPE CONSTANTS ==========
+EFFECT_AURA_ATK = "aura_atk"        # Passive attack buff/debuff while source alive
+EFFECT_AURA_HP = "aura_hp"          # Passive health buff/debuff while source alive
+EFFECT_POISON = "poison"            # Deal N damage at end of turn for duration turns
+EFFECT_STUN = "stun"                # Skip attack for duration turns
+EFFECT_WEAKEN = "weaken"            # -N attack for duration turns
+EFFECT_LIFESTEAL = "lifesteal"      # Intrinsic: heal for damage dealt on kill
+
+# Status effects that don't stack (refresh duration instead)
+NON_STACKING_EFFECTS = {EFFECT_STUN, EFFECT_POISON, EFFECT_WEAKEN}
+
+
+def create_effect(effect_type: str, value: int = 0, duration: int = -1,
+                  source_card_id: str = "", source_uid: str = "",
+                  condition: str = "") -> dict:
+    """Create an effect dict.
+
+    Args:
+        effect_type: One of the EFFECT_* constants.
+        value: Numeric magnitude (e.g., +1 attack, 2 poison damage).
+        duration: Turns remaining. -1 = permanent/aura (removed on source death).
+        source_card_id: The card_id of the card that applied this effect.
+        source_uid: Unique runtime ID for the source card instance.
+        condition: Optional filter (e.g. "Human" for species-conditional auras).
+    """
+    return {
+        "type": effect_type,
+        "value": value,
+        "duration": duration,
+        "source_card_id": source_card_id,
+        "source_uid": source_uid,
+        "condition": condition,
+    }
+
+
+def apply_effect(card_data: dict, new_effect: dict):
+    """Apply an effect to a card, respecting stacking rules.
+
+    Aura buffs stack (two Bannermen = +2 atk).
+    Status effects (stun, poison, weaken) don't stack -- refresh duration instead.
+    """
+    effects_list = card_data.setdefault("active_effects", [])
+
+    if new_effect["type"] in NON_STACKING_EFFECTS:
+        for existing in effects_list:
+            if existing["type"] == new_effect["type"]:
+                # Refresh: take the longer duration and stronger value
+                existing["duration"] = max(existing["duration"], new_effect["duration"])
+                existing["value"] = max(existing["value"], new_effect["value"])
+                return
+    effects_list.append(new_effect)
+
+
 class AbilityProcessor:
     """Processes card abilities and applies their effects."""
 
@@ -80,16 +133,22 @@ class AbilityProcessor:
                 if enemy_cards[weakest_idx]["current_health"] <= 0:
                     dead = enemy_cards.pop(weakest_idx)
                     effects.append(f"{dead['card_id']} was slain by the Assassin!")
+                    # Remove aura effects from the dead card
+                    enemy_player = Player.DEFENDER if player == Player.ATTACKER else Player.ATTACKER
+                    aura_msgs = AbilityProcessor.remove_aura_effects(
+                        game_manager, location, dead, enemy_player, zone)
+                    effects.extend(aura_msgs)
 
-        # Warlock: On play, enemy unit loses 1 attack
+        # Warlock: On play, enemy unit loses 1 attack (permanent weaken)
         if "Curse" in subtypes:
             enemy_cards = zone_data[enemy_key]
             if enemy_cards:
-                # Curse the first enemy
                 target = enemy_cards[0]
-                if "attack_modifier" not in target:
-                    target["attack_modifier"] = 0
-                target["attack_modifier"] -= 1
+                apply_effect(target, create_effect(
+                    EFFECT_WEAKEN, value=1, duration=-1,
+                    source_card_id=card_id,
+                    source_uid=card_data.get("uid", "")
+                ))
                 effects.append(f"Warlock curses {target['card_id']} (-1 attack)!")
 
         # Saboteur: On play, destroy enemy siege weapon in zone
@@ -107,59 +166,283 @@ class AbilityProcessor:
         if "Scout" in subtypes and card_id == "Spy":
             effects.append(f"Spy reveals all enemy positions at {location}!")
 
-        # Inspire abilities (Bannerman, War Drummer) - affect allies in same zone
+        # Inspire abilities (Bannerman, War Drummer) - aura: +1 atk to allies in zone
         if "Inspire" in subtypes:
             ally_cards = zone_data[player_key]
             for ally in ally_cards:
                 if ally != card_data:  # Don't buff self
-                    if "attack_modifier" not in ally:
-                        ally["attack_modifier"] = 0
-                    ally["attack_modifier"] += 1
+                    apply_effect(ally, create_effect(
+                        EFFECT_AURA_ATK, value=1, duration=-1,
+                        source_card_id=card_id,
+                        source_uid=card_data.get("uid", "")
+                    ))
             if len(ally_cards) > 1:
                 effects.append(f"{card_id} inspires allies (+1 attack)!")
 
-        # Commander ability (General)
+        # Commander ability (General) - aura: +1/+1 to allies in zone
         if "Commander" in subtypes:
             ally_cards = zone_data[player_key]
             for ally in ally_cards:
                 if ally != card_data:
-                    if "attack_modifier" not in ally:
-                        ally["attack_modifier"] = 0
-                    if "health_modifier" not in ally:
-                        ally["health_modifier"] = 0
-                    ally["attack_modifier"] += 1
-                    ally["health_modifier"] += 1
+                    apply_effect(ally, create_effect(
+                        EFFECT_AURA_ATK, value=1, duration=-1,
+                        source_card_id=card_id,
+                        source_uid=card_data.get("uid", "")
+                    ))
+                    apply_effect(ally, create_effect(
+                        EFFECT_AURA_HP, value=1, duration=-1,
+                        source_card_id=card_id,
+                        source_uid=card_data.get("uid", "")
+                    ))
                     ally["current_health"] = ally.get("current_health",
                         ally["card_info"][db.IDX_HEALTH]) + 1
             if len(ally_cards) > 1:
                 effects.append(f"{card_id} rallies allies (+1/+1)!")
 
-        # Druid: Beasts gain +1/+1 in same zone
+        # Druid: aura: Beasts gain +1/+1 in same zone
         if "Nature" in subtypes:
             ally_cards = zone_data[player_key]
             buffed_any = False
             for ally in ally_cards:
                 if AbilityProcessor.get_species(ally.get("card_info", [])) == "Beast":
-                    if "attack_modifier" not in ally:
-                        ally["attack_modifier"] = 0
-                    if "health_modifier" not in ally:
-                        ally["health_modifier"] = 0
-                    ally["attack_modifier"] += 1
-                    ally["health_modifier"] += 1
+                    apply_effect(ally, create_effect(
+                        EFFECT_AURA_ATK, value=1, duration=-1,
+                        source_card_id=card_id,
+                        source_uid=card_data.get("uid", ""),
+                        condition="Beast"
+                    ))
+                    apply_effect(ally, create_effect(
+                        EFFECT_AURA_HP, value=1, duration=-1,
+                        source_card_id=card_id,
+                        source_uid=card_data.get("uid", ""),
+                        condition="Beast"
+                    ))
                     ally["current_health"] = ally.get("current_health",
                         ally["card_info"][db.IDX_HEALTH]) + 1
                     buffed_any = True
             if buffed_any:
                 effects.append(f"Druid empowers nearby beasts (+1/+1)!")
 
+        # Aura_Atk: conditional aura +1 attack to allies matching species
+        # (Knight_Commander: +1 atk to all Humans in zone)
+        if "Aura_Atk" in subtypes:
+            species_filter = AbilityProcessor.get_species(card_info)
+            ally_cards = zone_data[player_key]
+            buffed_any = False
+            for ally in ally_cards:
+                if ally != card_data:
+                    ally_species = AbilityProcessor.get_species(
+                        ally.get("card_info", []))
+                    if not species_filter or ally_species == species_filter:
+                        apply_effect(ally, create_effect(
+                            EFFECT_AURA_ATK, value=1, duration=-1,
+                            source_card_id=card_id,
+                            source_uid=card_data.get("uid", ""),
+                            condition=species_filter
+                        ))
+                        buffed_any = True
+            if buffed_any:
+                filter_text = f" {species_filter}" if species_filter else ""
+                effects.append(f"{card_id} boosts allied{filter_text} units (+1 attack)!")
+
+        # Death_Knight: intrinsic lifesteal effect
+        if card_id == "Death_Knight":
+            apply_effect(card_data, create_effect(
+                EFFECT_LIFESTEAL, value=1, duration=-1,
+                source_card_id=card_id,
+                source_uid=card_data.get("uid", "")
+            ))
+
+        return effects
+
+    @staticmethod
+    def apply_existing_auras(game_manager, location: str, card_data: dict,
+                             player, zone: str) -> list[str]:
+        """Apply aura effects from allies already in the zone to a newly placed card."""
+        effects = []
+        player_key = "attacker" if player == Player.ATTACKER else "defender"
+        zone_cards = game_manager.battlefield_cards[location][zone][player_key]
+
+        for ally in zone_cards:
+            if ally is card_data:
+                continue
+            ally_subtypes = AbilityProcessor.get_subtypes(ally.get("card_info", []))
+            ally_uid = ally.get("uid", "")
+            ally_id = ally.get("card_id", "")
+
+            # Inspire aura: +1 atk to all allies
+            if "Inspire" in ally_subtypes:
+                apply_effect(card_data, create_effect(
+                    EFFECT_AURA_ATK, value=1, duration=-1,
+                    source_card_id=ally_id, source_uid=ally_uid
+                ))
+
+            # Commander aura: +1/+1 to all allies
+            if "Commander" in ally_subtypes:
+                apply_effect(card_data, create_effect(
+                    EFFECT_AURA_ATK, value=1, duration=-1,
+                    source_card_id=ally_id, source_uid=ally_uid
+                ))
+                apply_effect(card_data, create_effect(
+                    EFFECT_AURA_HP, value=1, duration=-1,
+                    source_card_id=ally_id, source_uid=ally_uid
+                ))
+                card_data["current_health"] = card_data.get("current_health",
+                    card_data["card_info"][db.IDX_HEALTH]) + 1
+
+            # Druid aura: +1/+1 to Beasts
+            if "Nature" in ally_subtypes:
+                if AbilityProcessor.get_species(card_data.get("card_info", [])) == "Beast":
+                    apply_effect(card_data, create_effect(
+                        EFFECT_AURA_ATK, value=1, duration=-1,
+                        source_card_id=ally_id, source_uid=ally_uid,
+                        condition="Beast"
+                    ))
+                    apply_effect(card_data, create_effect(
+                        EFFECT_AURA_HP, value=1, duration=-1,
+                        source_card_id=ally_id, source_uid=ally_uid,
+                        condition="Beast"
+                    ))
+                    card_data["current_health"] = card_data.get("current_health",
+                        card_data["card_info"][db.IDX_HEALTH]) + 1
+
+            # Aura_Atk: conditional aura +1 attack (e.g. Knight_Commander for Humans)
+            if "Aura_Atk" in ally_subtypes:
+                ally_species = AbilityProcessor.get_species(ally.get("card_info", []))
+                card_species = AbilityProcessor.get_species(card_data.get("card_info", []))
+                if not ally_species or card_species == ally_species:
+                    apply_effect(card_data, create_effect(
+                        EFFECT_AURA_ATK, value=1, duration=-1,
+                        source_card_id=ally_id, source_uid=ally_uid,
+                        condition=ally_species
+                    ))
+
+        return effects
+
+    @staticmethod
+    def apply_new_card_auras(game_manager, location: str, card_data: dict,
+                             player, zone: str) -> list[str]:
+        """Apply aura effects FROM a newly placed card TO existing allies in the zone.
+        
+        This applies the new card's aura abilities to all allies already present.
+        """
+        effects = []
+        player_key = "attacker" if player == Player.ATTACKER else "defender"
+        zone_cards = game_manager.battlefield_cards[location][zone][player_key]
+        
+        card_subtypes = AbilityProcessor.get_subtypes(card_data.get("card_info", []))
+        card_uid = card_data.get("uid", "")
+        card_id = card_data.get("card_id", "")
+
+        # Apply this card's aura effects to existing allies
+        for ally in zone_cards:
+            if ally is card_data:
+                continue
+
+            # Inspire aura: +1 atk to all allies
+            if "Inspire" in card_subtypes:
+                apply_effect(ally, create_effect(
+                    EFFECT_AURA_ATK, value=1, duration=-1,
+                    source_card_id=card_id, source_uid=card_uid
+                ))
+                effects.append(f"{card_id} inspires allies, {ally['card_id']} gains +1 attack")
+
+            # Commander aura: +1/+1 to all allies
+            if "Commander" in card_subtypes:
+                apply_effect(ally, create_effect(
+                    EFFECT_AURA_ATK, value=1, duration=-1,
+                    source_card_id=card_id, source_uid=card_uid
+                ))
+                apply_effect(ally, create_effect(
+                    EFFECT_AURA_HP, value=1, duration=-1,
+                    source_card_id=card_id, source_uid=card_uid
+                ))
+                # Update current health for existing allies
+                ally["current_health"] = ally.get("current_health",
+                    ally["card_info"][db.IDX_HEALTH]) + 1
+                effects.append(f"{card_id} commands, {ally['card_id']} gains +1/+1")
+
+            # Druid aura: +1/+1 to Beasts
+            if "Nature" in card_subtypes:
+                if AbilityProcessor.get_species(ally.get("card_info", [])) == "Beast":
+                    apply_effect(ally, create_effect(
+                        EFFECT_AURA_ATK, value=1, duration=-1,
+                        source_card_id=card_id, source_uid=card_uid,
+                        condition="Beast"
+                    ))
+                    apply_effect(ally, create_effect(
+                        EFFECT_AURA_HP, value=1, duration=-1,
+                        source_card_id=card_id, source_uid=card_uid,
+                        condition="Beast"
+                    ))
+                    # Update current health
+                    ally["current_health"] = ally.get("current_health",
+                        ally["card_info"][db.IDX_HEALTH]) + 1
+                    effects.append(f"{card_id} nurtures, Beast {ally['card_id']} gains +1/+1")
+
+            # Aura_Atk: conditional aura +1 attack (e.g. Knight_Commander for Humans)
+            if "Aura_Atk" in card_subtypes:
+                card_species = AbilityProcessor.get_species(card_data.get("card_info", []))
+                ally_species = AbilityProcessor.get_species(ally.get("card_info", []))
+                if not card_species or ally_species == card_species:
+                    apply_effect(ally, create_effect(
+                        EFFECT_AURA_ATK, value=1, duration=-1,
+                        source_card_id=card_id, source_uid=card_uid,
+                        condition=card_species
+                    ))
+                    effects.append(f"{card_id} commands, {ally['card_id']} gains +1 attack")
+
         return effects
 
     @staticmethod
     def get_effective_attack(card_data: dict) -> int:
-        """Get the effective attack value including modifiers."""
+        """Get the effective attack value including modifiers and active effects."""
         base_attack = card_data["card_info"][db.IDX_ATTACK]
         modifier = card_data.get("attack_modifier", 0)
+        for effect in card_data.get("active_effects", []):
+            if effect["type"] == EFFECT_AURA_ATK:
+                modifier += effect["value"]
+            elif effect["type"] == EFFECT_WEAKEN:
+                modifier -= effect["value"]
         return max(0, base_attack + modifier)
+
+    @staticmethod
+    def get_effective_max_health(card_data: dict) -> int:
+        """Get effective max health including modifiers and active effects."""
+        base_health = card_data["card_info"][db.IDX_HEALTH]
+        modifier = card_data.get("health_modifier", 0)
+        for effect in card_data.get("active_effects", []):
+            if effect["type"] == EFFECT_AURA_HP:
+                modifier += effect["value"]
+        return max(1, base_health + modifier)
+
+    @staticmethod
+    def is_stunned(card_data: dict) -> bool:
+        """Check if a card is stunned (cannot attack)."""
+        return any(e["type"] == EFFECT_STUN for e in card_data.get("active_effects", []))
+
+    @staticmethod
+    def apply_combat_triggers(attacker_card: dict, defender_card: dict) -> list[str]:
+        """Apply effects triggered during combat (after target selection, before damage).
+
+        Returns list of effect messages.
+        """
+        effects = []
+        atk_subtypes = AbilityProcessor.get_subtypes(attacker_card.get("card_info", []))
+
+        # Petrify (Basilisk): first attack stuns enemy for 1 turn
+        if "Petrify" in atk_subtypes and not attacker_card.get("has_petrified", False):
+            attacker_card["has_petrified"] = True
+            apply_effect(defender_card, create_effect(
+                EFFECT_STUN, value=0, duration=1,
+                source_card_id=attacker_card.get("card_id", ""),
+                source_uid=attacker_card.get("uid", "")
+            ))
+            effects.append(
+                f"{attacker_card['card_id']} petrifies "
+                f"{defender_card['card_id']} for 1 turn!")
+
+        return effects
 
     @staticmethod
     def process_combat_modifiers(game_manager, location: str,
@@ -239,13 +522,45 @@ class AbilityProcessor:
                     if "Support" in subtypes and card.get("card_id") == "Healer":
                         healed_any = False
                         for ally in cards:
-                            max_health = ally["card_info"][db.IDX_HEALTH] + ally.get("health_modifier", 0)
+                            max_health = AbilityProcessor.get_effective_max_health(ally)
                             current = ally.get("current_health", max_health)
                             if current < max_health:
                                 ally["current_health"] = min(max_health, current + 1)
                                 healed_any = True
                         if healed_any:
                             effects.append(f"Healer restores 1 health to allies at {location}/{zone}")
+
+        # Process poison damage and collect poison-killed cards
+        poison_dead = []  # [(zone, player_key, card, card_index)]
+        for zone in ["attacker_zone", "middle_zone", "defender_zone"]:
+            zone_data = game_manager.battlefield_cards[location][zone]
+            for player_key in ["attacker", "defender"]:
+                cards = zone_data[player_key]
+                for card in cards:
+                    poison_effects = [
+                        e for e in card.get("active_effects", [])
+                        if e["type"] == EFFECT_POISON
+                    ]
+                    for poison in poison_effects:
+                        card["current_health"] = card.get("current_health",
+                            card["card_info"][db.IDX_HEALTH]) - poison["value"]
+                        effects.append(
+                            f"{card['card_id']} takes {poison['value']} poison damage!")
+
+                # Remove poison-killed cards (iterate backwards)
+                for i in range(len(cards) - 1, -1, -1):
+                    if cards[i].get("current_health", 1) <= 0:
+                        dead_card = cards.pop(i)
+                        effects.append(f"{dead_card['card_id']} dies from poison!")
+                        player = Player.ATTACKER if player_key == "attacker" else Player.DEFENDER
+                        # Process on-death abilities
+                        death_msgs = AbilityProcessor.process_on_death(
+                            game_manager, location, dead_card, player, zone)
+                        effects.extend(death_msgs)
+                        # Remove aura effects from the dead card
+                        aura_msgs = AbilityProcessor.remove_aura_effects(
+                            game_manager, location, dead_card, player, zone)
+                        effects.extend(aura_msgs)
 
         return effects
 
@@ -269,11 +584,79 @@ class AbilityProcessor:
                     "card_info": skeleton_info,
                     "is_tapped": True,
                     "current_health": skeleton_info[db.IDX_HEALTH],
-                    "zone": zone
+                    "zone": zone,
+                    "uid": str(game_manager._next_card_uid),
+                    "active_effects": [],
                 }
+                game_manager._next_card_uid += 1
                 game_manager.battlefield_cards[location][zone][player_key].append(skeleton)
                 effects.append("Necromancer's death summons a Skeleton!")
 
+        return effects
+
+    @staticmethod
+    def remove_aura_effects(game_manager, location: str, dead_card: dict,
+                            player, zone: str) -> list[str]:
+        """Remove all aura effects sourced from a dead card from allies in the same zone.
+
+        Adjusts current_health when HP auras are lost (clamped to min 1).
+        """
+        effects = []
+        dead_uid = dead_card.get("uid", "")
+        if not dead_uid:
+            return effects
+
+        player_key = "attacker" if player == Player.ATTACKER else "defender"
+        zone_data = game_manager.battlefield_cards[location][zone]
+        ally_cards = zone_data[player_key]
+
+        for ally in ally_cards:
+            if not ally.get("active_effects"):
+                continue
+            before_count = len(ally["active_effects"])
+            # Track HP aura removal for current_health adjustment
+            hp_aura_loss = sum(
+                e["value"] for e in ally["active_effects"]
+                if e["source_uid"] == dead_uid and e["type"] == EFFECT_AURA_HP
+            )
+            # Remove all effects from this source
+            ally["active_effects"] = [
+                e for e in ally["active_effects"]
+                if e["source_uid"] != dead_uid
+            ]
+            # Reduce current_health if HP aura was lost (don't kill)
+            if hp_aura_loss > 0:
+                ally["current_health"] = max(1, ally.get("current_health",
+                    ally["card_info"][db.IDX_HEALTH]) - hp_aura_loss)
+
+            if len(ally["active_effects"]) < before_count:
+                effects.append(f"{ally['card_id']} loses aura from {dead_card['card_id']}")
+
+        return effects
+
+    @staticmethod
+    def tick_effect_durations(game_manager) -> list[str]:
+        """Decrement duration on all temporary effects. Remove expired ones."""
+        effects = []
+        for location in game_manager.LOCATIONS:
+            for zone in ["attacker_zone", "middle_zone", "defender_zone"]:
+                zone_data = game_manager.battlefield_cards[location][zone]
+                for player_key in ["attacker", "defender"]:
+                    for card in zone_data[player_key]:
+                        if not card.get("active_effects"):
+                            continue
+                        remaining = []
+                        for e in card["active_effects"]:
+                            if e["duration"] == -1:
+                                remaining.append(e)  # Permanent/aura -- no expiry
+                            elif e["duration"] > 1:
+                                e["duration"] -= 1
+                                remaining.append(e)
+                            else:
+                                # Duration expired
+                                effects.append(
+                                    f"{e['type']} on {card['card_id']} expired")
+                        card["active_effects"] = remaining
         return effects
 
 
@@ -378,6 +761,9 @@ class GameManager:
         self.combat_phase = GamePhase.MAIN
         self.pending_attackers: list[dict] = []  # [{location, card_index, player, card}]
         self.pending_blocks: dict[int, list[int]] = {}  # attacker_idx -> [blocker_indices]
+
+        # ========== EFFECT SYSTEM ==========
+        self._next_card_uid = 1  # Monotonic counter for unique card instance IDs
 
         self._init_battlefield()
 
@@ -542,8 +928,11 @@ class GameManager:
             "current_health": card_info[db.IDX_HEALTH],
             "turn_placed": self.current_turn,
             "has_moved_this_turn": False,
-            "zone": zone  # Track which zone the card is in
+            "zone": zone,  # Track which zone the card is in
+            "uid": str(self._next_card_uid),
+            "active_effects": [],
         }
+        self._next_card_uid += 1
 
         player_key = "attacker" if player == Player.ATTACKER else "defender"
         zone_data = self.battlefield_cards[location][zone]
@@ -561,6 +950,14 @@ class GameManager:
         ability_effects = AbilityProcessor.process_on_play(self, location, card_entry, player, zone)
         for effect in ability_effects:
             print(f"[ABILITY] {effect}")
+
+        # Apply existing aura effects from allies already in the zone to this new card
+        AbilityProcessor.apply_existing_auras(self, location, card_entry, player, zone)
+
+        # Apply this new card's aura effects to existing allies already in the zone
+        new_card_aura_effects = AbilityProcessor.apply_new_card_auras(self, location, card_entry, player, zone)
+        for effect in new_card_aura_effects:
+            print(f"[AURA] {effect}")
 
         if self.on_card_placed:
             self.on_card_placed(location, card_entry, player_name)
@@ -619,6 +1016,11 @@ class GameManager:
                     effects = AbilityProcessor.process_end_of_turn(self, loc)
                     for effect in effects:
                         print(f"[ABILITY] {effect}")
+
+                # Tick effect durations (expire temporary effects)
+                tick_effects = AbilityProcessor.tick_effect_durations(self)
+                for effect in tick_effects:
+                    print(f"[ABILITY] {effect}")
 
                 # Accumulate capture power and check for captures
                 self.accumulate_capture_power()
@@ -844,9 +1246,91 @@ class GameManager:
         card["has_moved_this_turn"] = True  # Mark card as having moved
         card["zone"] = to_zone
 
+        # Handle aura effects for the move:
+        # 1. Remove auras this card was providing to allies at old location
+        card_uid = card.get("uid", "")
+        if card_uid:
+            old_allies = self.battlefield_cards[from_loc][source_zone][player_key]
+            for ally in old_allies:
+                if not ally.get("active_effects"):
+                    continue
+                hp_loss = sum(
+                    e["value"] for e in ally["active_effects"]
+                    if e["source_uid"] == card_uid and e["type"] == EFFECT_AURA_HP
+                )
+                ally["active_effects"] = [
+                    e for e in ally["active_effects"]
+                    if e["source_uid"] != card_uid
+                ]
+                if hp_loss > 0:
+                    ally["current_health"] = max(1, ally.get("current_health",
+                        ally["card_info"][db.IDX_HEALTH]) - hp_loss)
+
+        # 2. Remove aura effects this card was receiving at old location
+        card["active_effects"] = [
+            e for e in card.get("active_effects", [])
+            if e["type"] not in (EFFECT_AURA_ATK, EFFECT_AURA_HP)
+        ]
+
         # Add to destination
         dest_zone_data = self.battlefield_cards[to_loc][to_zone]
         dest_zone_data[player_key].append(card)
+
+        # 3. Apply auras from allies already at new location to this card
+        AbilityProcessor.apply_existing_auras(self, to_loc, card, player, to_zone)
+
+        # 4. If this card is an aura source, apply its aura to allies at new location
+        card_subtypes = AbilityProcessor.get_subtypes(card.get("card_info", []))
+        new_allies = dest_zone_data[player_key]
+        if "Inspire" in card_subtypes:
+            for ally in new_allies:
+                if ally is not card:
+                    apply_effect(ally, create_effect(
+                        EFFECT_AURA_ATK, value=1, duration=-1,
+                        source_card_id=card["card_id"],
+                        source_uid=card_uid
+                    ))
+        if "Commander" in card_subtypes:
+            for ally in new_allies:
+                if ally is not card:
+                    apply_effect(ally, create_effect(
+                        EFFECT_AURA_ATK, value=1, duration=-1,
+                        source_card_id=card["card_id"],
+                        source_uid=card_uid
+                    ))
+                    apply_effect(ally, create_effect(
+                        EFFECT_AURA_HP, value=1, duration=-1,
+                        source_card_id=card["card_id"],
+                        source_uid=card_uid
+                    ))
+                    ally["current_health"] = ally.get("current_health",
+                        ally["card_info"][db.IDX_HEALTH]) + 1
+        if "Nature" in card_subtypes:
+            for ally in new_allies:
+                if ally is not card and AbilityProcessor.get_species(ally.get("card_info", [])) == "Beast":
+                    apply_effect(ally, create_effect(
+                        EFFECT_AURA_ATK, value=1, duration=-1,
+                        source_card_id=card["card_id"],
+                        source_uid=card_uid, condition="Beast"
+                    ))
+                    apply_effect(ally, create_effect(
+                        EFFECT_AURA_HP, value=1, duration=-1,
+                        source_card_id=card["card_id"],
+                        source_uid=card_uid, condition="Beast"
+                    ))
+                    ally["current_health"] = ally.get("current_health",
+                        ally["card_info"][db.IDX_HEALTH]) + 1
+        if "Aura_Atk" in card_subtypes:
+            card_species = AbilityProcessor.get_species(card.get("card_info", []))
+            for ally in new_allies:
+                if ally is not card:
+                    ally_species = AbilityProcessor.get_species(ally.get("card_info", []))
+                    if not card_species or ally_species == card_species:
+                        apply_effect(ally, create_effect(
+                            EFFECT_AURA_ATK, value=1, duration=-1,
+                            source_card_id=card["card_id"],
+                            source_uid=card_uid, condition=card_species
+                        ))
 
         # Track first placer in middle zone
         if to_zone == "middle_zone" and dest_zone_data["first_placer"] is None:
@@ -926,12 +1410,30 @@ class GameManager:
 
         # Attacker's cards attack defender's cards
         for i, atk_card in enumerate(attacker_cards):
+            # Skip stunned cards
+            if AbilityProcessor.is_stunned(atk_card):
+                result.attacks.append({
+                    "attacker_side": "attacker",
+                    "attacker_card": atk_card["card_id"],
+                    "defender_card": None,
+                    "damage": 0,
+                    "stunned": True
+                })
+                print(f"[ABILITY] {atk_card['card_id']} is stunned and cannot attack!")
+                continue
+
             if defender_cards:
                 # Taunt forces targeting, otherwise random
                 if defender_taunts:
                     target_idx = random.choice(defender_taunts)
                 else:
                     target_idx = random.randint(0, len(defender_cards) - 1)
+
+                # Apply combat triggers (e.g. Petrify stun)
+                trigger_msgs = AbilityProcessor.apply_combat_triggers(
+                    atk_card, defender_cards[target_idx])
+                for msg in trigger_msgs:
+                    print(f"[ABILITY] {msg}")
 
                 # Calculate damage with modifiers
                 base_damage = AbilityProcessor.get_effective_attack(atk_card)
@@ -985,12 +1487,30 @@ class GameManager:
 
         # Defender's cards attack attacker's cards
         for i, def_card in enumerate(defender_cards):
+            # Skip stunned cards
+            if AbilityProcessor.is_stunned(def_card):
+                result.attacks.append({
+                    "attacker_side": "defender",
+                    "attacker_card": def_card["card_id"],
+                    "defender_card": None,
+                    "damage": 0,
+                    "stunned": True
+                })
+                print(f"[ABILITY] {def_card['card_id']} is stunned and cannot attack!")
+                continue
+
             if attacker_cards:
                 # Taunt forces targeting
                 if attacker_taunts:
                     target_idx = random.choice(attacker_taunts)
                 else:
                     target_idx = random.randint(0, len(attacker_cards) - 1)
+
+                # Apply combat triggers (e.g. Petrify stun)
+                trigger_msgs = AbilityProcessor.apply_combat_triggers(
+                    def_card, attacker_cards[target_idx])
+                for msg in trigger_msgs:
+                    print(f"[ABILITY] {msg}")
 
                 # Calculate damage with modifiers
                 base_damage = AbilityProcessor.get_effective_attack(def_card)
@@ -1064,13 +1584,21 @@ class GameManager:
                 for effect in death_effects:
                     print(f"[ABILITY] {effect}")
 
-                # Death Knight heals when killing (check if killer was a Death Knight)
+                # Remove aura effects from the dead card
+                aura_effects = AbilityProcessor.remove_aura_effects(
+                    self, location, dead_card, Player.ATTACKER, zone)
+                for effect in aura_effects:
+                    print(f"[ABILITY] {effect}")
+
+                # Lifesteal: enemy cards with lifesteal heal on kill
                 for def_card in defender_cards:
-                    if def_card.get("card_id") == "Death_Knight":
-                        max_hp = def_card["card_info"][db.IDX_HEALTH]
+                    ls_effects = [e for e in def_card.get("active_effects", [])
+                                  if e["type"] == EFFECT_LIFESTEAL]
+                    for ls in ls_effects:
+                        max_hp = AbilityProcessor.get_effective_max_health(def_card)
                         def_card["current_health"] = min(max_hp,
-                            def_card.get("current_health", max_hp) + 1)
-                        print(f"[ABILITY] Death Knight heals from the kill!")
+                            def_card.get("current_health", max_hp) + ls["value"])
+                        print(f"[ABILITY] {def_card['card_id']} heals {ls['value']} from lifesteal!")
 
         for i in range(len(defender_cards) - 1, -1, -1):
             if defender_cards[i]["current_health"] <= 0:
@@ -1084,13 +1612,21 @@ class GameManager:
                 for effect in death_effects:
                     print(f"[ABILITY] {effect}")
 
-                # Death Knight heals
+                # Remove aura effects from the dead card
+                aura_effects = AbilityProcessor.remove_aura_effects(
+                    self, location, dead_card, Player.DEFENDER, zone)
+                for effect in aura_effects:
+                    print(f"[ABILITY] {effect}")
+
+                # Lifesteal: enemy cards with lifesteal heal on kill
                 for atk_card in attacker_cards:
-                    if atk_card.get("card_id") == "Death_Knight":
-                        max_hp = atk_card["card_info"][db.IDX_HEALTH]
+                    ls_effects = [e for e in atk_card.get("active_effects", [])
+                                  if e["type"] == EFFECT_LIFESTEAL]
+                    for ls in ls_effects:
+                        max_hp = AbilityProcessor.get_effective_max_health(atk_card)
                         atk_card["current_health"] = min(max_hp,
-                            atk_card.get("current_health", max_hp) + 1)
-                        print(f"[ABILITY] Death Knight heals from the kill!")
+                            atk_card.get("current_health", max_hp) + ls["value"])
+                        print(f"[ABILITY] {atk_card['card_id']} heals {ls['value']} from lifesteal!")
 
         # Determine who won the engagement
         if not attacker_cards and defender_cards:
@@ -1352,6 +1888,18 @@ class GameManager:
         # Process each attacker
         print(f"[COMBAT-GM] Processing {len(attacker_cards)} attackers with assignments: {assignments}")
         for atk_idx, atk_card in enumerate(attacker_cards):
+            # Skip stunned cards
+            if AbilityProcessor.is_stunned(atk_card):
+                result.attacks.append({
+                    "attacker_side": attacker_side,
+                    "attacker_card": atk_card["card_id"],
+                    "defender_card": None,
+                    "damage": 0,
+                    "stunned": True
+                })
+                print(f"[ABILITY] {atk_card['card_id']} is stunned and cannot attack!")
+                continue
+
             blocker_indices = assignments.get(atk_idx, [])
             print(f"[COMBAT-GM] Attacker {atk_idx} ({atk_card['card_id']}) has blockers: {blocker_indices}")
 
@@ -1370,6 +1918,12 @@ class GameManager:
 
                 if primary_blocker_idx < len(defender_cards):
                     blocker = defender_cards[primary_blocker_idx]
+
+                    # Apply combat triggers (e.g. Petrify stun)
+                    trigger_msgs = AbilityProcessor.apply_combat_triggers(
+                        atk_card, blocker)
+                    for msg in trigger_msgs:
+                        print(f"[ABILITY] {msg}")
 
                     # Apply damage modifiers
                     damage = atk_damage
@@ -1470,6 +2024,12 @@ class GameManager:
                 for effect in death_effects:
                     print(f"[ABILITY] {effect}")
 
+                # Remove aura effects from the dead card
+                aura_effects = AbilityProcessor.remove_aura_effects(
+                    self, location, dead_card, attacker_player, zone)
+                for effect in aura_effects:
+                    print(f"[ABILITY] {effect}")
+
         for i in range(len(defender_cards) - 1, -1, -1):
             if defender_cards[i]["current_health"] <= 0:
                 dead_card = defender_cards.pop(i)
@@ -1480,6 +2040,12 @@ class GameManager:
                 death_effects = AbilityProcessor.process_on_death(
                     self, location, dead_card, defender_player, zone)
                 for effect in death_effects:
+                    print(f"[ABILITY] {effect}")
+
+                # Remove aura effects from the dead card
+                aura_effects = AbilityProcessor.remove_aura_effects(
+                    self, location, dead_card, defender_player, zone)
+                for effect in aura_effects:
                     print(f"[ABILITY] {effect}")
 
         return result

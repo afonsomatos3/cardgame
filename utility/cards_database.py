@@ -16,7 +16,7 @@ CARDS_DATA = {
         "Unit", "Ranged", "Human", 3, 2, 3, "Archer", ""
     ],
     "Knight_Commander": [
-        "Unit", "", "Human", 4, 4, 5, "Knight Commander",
+        "Unit", "Aura_Atk", "Human", 4, 4, 5, "Knight Commander",
         "+1 damage to all humans in the area"
     ],
     "Eagle": [
