@@ -73,6 +73,18 @@ def should_show_full_text(ability_text: str) -> bool:
     return first_word in ["on play", "last whisper"]
 
 
+def get_card_type_string(card_info: dict) -> str:
+    """Get formatted card type string from card info dict."""
+    subtype = card_info.get("subtype", "")
+    species = card_info.get("species", "")
+    type_parts = []
+    if subtype:
+        type_parts.append(subtype)
+    if species:
+        type_parts.append(species)
+    return " - ".join(type_parts) if type_parts else ""
+
+
 def parse_ability(ability_text: str) -> tuple[str, str, str | None]:
     """Parse ability text to extract name, description, and number.
     
@@ -397,9 +409,14 @@ class DrawMenu:
             type_info.append(species)
         
         if type_info:
-            type_text = self.tiny_font.render(" / ".join(type_info), True, (100, 80, 60))
-            type_rect = type_text.get_rect(centerx=self.CARD_WIDTH // 2, top=24)
-            surf.blit(type_text, type_rect)
+            type_text = self.tiny_font.render(" - ".join(type_info), True, (100, 80, 60))
+            # Create background box for type text
+            type_bg = pygame.Surface((type_text.get_width() + 6, type_text.get_height() + 2), pygame.SRCALPHA)
+            pygame.draw.rect(type_bg, (245, 235, 220, 200), (0, 0, type_bg.get_width(), type_bg.get_height()), border_radius=2)
+            pygame.draw.rect(type_bg, (139, 90, 43, 220), (0, 0, type_bg.get_width(), type_bg.get_height()), 1, border_radius=2)
+            type_bg.blit(type_text, (3, 1))
+            type_rect = type_bg.get_rect(centerx=self.CARD_WIDTH // 2, top=24)
+            surf.blit(type_bg, type_rect)
 
         # Cost circle (shows turns to arrive)
         pygame.draw.circle(surf, (70, 130, 180), (18, 18), 14)
@@ -459,7 +476,12 @@ class DrawMenu:
 
     def show(self, deck_cards: list, cards_info: dict):
         """Show the draw menu with animation."""
-        self.available_cards = deck_cards
+        # Sort cards by cost (ascending), then by name (alphabetically)
+        sorted_cards = sorted(deck_cards, key=lambda cid: (
+            cards_info.get(cid, {}).get("cost", 0),
+            cards_info.get(cid, {}).get("name", cid).lower()
+        ))
+        self.available_cards = sorted_cards
         self.cards_info = cards_info
         self.is_visible = True
         self.scroll_offset = 0
@@ -1731,6 +1753,9 @@ class ThinClient:
 
         self.ui_anim = UIAnimation()
         self.turn_flash = 0
+        self.turn_flash_is_your_turn = False  # Track if the flash is for your turn or opponent's
+        self.last_turn = 0  # Track last turn number seen
+        self.last_phase = ""  # Track last phase seen
         self.bg_particles = []
         self.reinforcements = []
 
@@ -1783,6 +1808,8 @@ class ThinClient:
 
     def _on_game_state(self, state: dict):
         old_turn = self.game_state.get("turn") if self.game_state else 0
+        old_phase = self.game_state.get("phase") if self.game_state else ""
+        old_is_your_turn = self.game_state.get("is_your_turn", False) if self.game_state else False
         self.game_state = state
         new_role = state.get("your_role", "attacker")
         if new_role != self.your_role:
@@ -1790,8 +1817,18 @@ class ThinClient:
             self._setup_locations()
         self.reinforcements = state.get("reinforcements", [])
         self._update_hand_cards()
-        if state.get("turn", 0) > old_turn:
-            self.turn_flash = 1.0
+        
+        # Check for turn/phase changes to trigger transition
+        current_turn = state.get("turn", 0)
+        current_phase = state.get("phase", "")
+        is_your_turn = state.get("is_your_turn", False)
+        
+        # Trigger transition when:
+        # 1. Phase changes and it's now your turn, OR
+        # 2. It becomes your turn within the same phase (opponent ended their action)
+        if is_your_turn and (current_phase != old_phase or (not old_is_your_turn and is_your_turn)):
+            self.turn_flash = 3.0  # Longer flash duration
+            self.turn_flash_is_your_turn = True
 
         # Check for game over (winner in game state)
         winner = state.get("winner")
@@ -2040,7 +2077,11 @@ class ThinClient:
             self.network.save_deck(self.deck_name, self.current_deck, is_active=True); return
         if pygame.Rect(self.screen_width - 230, 20, 100, 40).collidepoint(pos): self.current_deck = []; return
 
-        cards_list = sorted(self.available_cards.keys())
+        # Sort cards by cost (ascending), then by name (alphabetically)
+        cards_list = sorted(self.available_cards.keys(), key=lambda cid: (
+            self.available_cards[cid].get("cost", 0),
+            self.available_cards[cid].get("name", cid).lower()
+        ))
         # Match the drawing code: 5 columns, 2 rows with calculated sizes
         cpr = 5
         rows = 2
@@ -2174,7 +2215,7 @@ class ThinClient:
         if self.error_timer <= 0: self.error_message = None
         if self.success_timer > 0: self.success_timer -= dt
         if self.success_timer <= 0: self.success_message = None
-        if self.turn_flash > 0: self.turn_flash -= dt * 2
+        if self.turn_flash > 0: self.turn_flash -= dt
         for c in self.hand_cards: c.update(dt)
         self.draw_menu.update(dt); self.location_panel.update(dt); self.combat_selector.update(dt)
         self.ui_anim.update(dt); self._update_particles(dt)
@@ -2440,6 +2481,17 @@ class ThinClient:
         pygame.draw.rect(name_bg, (139, 90, 43, 220), (0, 0, name_bg.get_width(), name_bg.get_height()), 1, border_radius=3)
         name_bg.blit(name_surf, (3, 1))
         s.blit(name_bg, (max(0, (width - name_bg.get_width()) // 2), 2))
+
+        # Card type below name
+        type_str = get_card_type_string(ci)
+        if type_str:
+            type_surf = tiny_font.render(type_str, True, (100, 80, 60))
+            # Create background box for type text
+            type_bg = pygame.Surface((type_surf.get_width() + 6, type_surf.get_height() + 2), pygame.SRCALPHA)
+            pygame.draw.rect(type_bg, (245, 235, 220, 200), (0, 0, type_bg.get_width(), type_bg.get_height()), border_radius=2)
+            pygame.draw.rect(type_bg, (139, 90, 43, 220), (0, 0, type_bg.get_width(), type_bg.get_height()), 1, border_radius=2)
+            type_bg.blit(type_surf, (3, 1))
+            s.blit(type_bg, type_bg.get_rect(centerx=width // 2, top=name_bg.get_height() + 3))
 
         # Cost badge (top-left) - drawn AFTER image so it appears on top
         cost_radius = max(8, width // 12)
@@ -2717,6 +2769,7 @@ class ThinClient:
         self._draw_opponent_info(); self._draw_opponent_hand(); self._draw_battlefield(); self._draw_hand(); self._draw_turn_info(); self._draw_deck(); self._draw_reinforcements()
         self.draw_menu.draw(self.screen); self.location_panel.draw(self.screen); self.combat_selector.draw(self.screen)
         self._draw_match_card_tooltip()
+        self._draw_turn_transition()  # Draw turn transition overlay last so it appears on top
 
     def _draw_match_start_transition(self):
         """Draw the match start transition with player info and role assignment."""
@@ -2981,7 +3034,20 @@ class ThinClient:
                 except: pass
             nm = cd.get("name", cid)[:14]; atk, hp, cost = cd.get("attack", 0), cd.get("health", 0), cd.get("cost", 0)
             sp = cd.get("special", ""); sf, tf = pygame.font.Font(None, 18), pygame.font.Font(None, 14)
+            # Render name
             s.blit(sf.render(nm, True, (50, 40, 30)), sf.render(nm, True, (50, 40, 30)).get_rect(centerx=CARD_WIDTH // 2, top=5))
+            # Render card type below name
+            type_str = get_card_type_string(cd)
+            if type_str:
+                type_font = pygame.font.Font(None, 12)
+                type_text = type_font.render(type_str, True, (100, 80, 60))
+                # Create background box for type text
+                type_bg = pygame.Surface((type_text.get_width() + 6, type_text.get_height() + 2), pygame.SRCALPHA)
+                pygame.draw.rect(type_bg, (245, 235, 220, 200), (0, 0, type_bg.get_width(), type_bg.get_height()), border_radius=2)
+                pygame.draw.rect(type_bg, (139, 90, 43, 220), (0, 0, type_bg.get_width(), type_bg.get_height()), 1, border_radius=2)
+                type_bg.blit(type_text, (3, 1))
+                s.blit(type_bg, type_bg.get_rect(centerx=CARD_WIDTH // 2, top=21))
+            # Cost circle
             pygame.draw.circle(s, (70, 130, 180), (16, 16), 12)
             s.blit(sf.render(str(cost), True, WHITE), sf.render(str(cost), True, WHITE).get_rect(center=(16, 16)))
             if sp:
@@ -3020,18 +3086,91 @@ class ThinClient:
 
     def _draw_turn_info(self):
         tn = self.game_state.get("turn", 1); iyt = self.game_state.get("is_your_turn", False); yr = self.game_state.get("your_role", "")
-        if self.turn_flash > 0:
-            fl = pygame.Surface((self.screen_width, 60), pygame.SRCALPHA); fl.fill((255, 255, 255, int(50 * self.turn_flash)))
-            self.screen.blit(fl, (0, 40))
-        self.screen.blit(self.font.render(f"Turn {tn}", True, WHITE), (20, 50))
-        pt, pc = ("YOUR TURN", GREEN) if iyt else ("OPPONENT'S TURN", RED)
+        phase = self.game_state.get("phase", "DEPLOYMENT").replace("_", " ").title()
+        self.screen.blit(self.font.render(f"Turn {tn} - {phase}", True, WHITE), (20, 50))
+        pt, pc = ("YOUR ACTION", GREEN) if iyt else ("OPPONENT'S ACTION", RED)
         self.screen.blit(self.font.render(pt, True, pc), (20, 85))
         self.screen.blit(self.small_font.render(f"You are: {yr.upper()}", True, RED if yr == "attacker" else BLUE), (20, 120))
         if iyt:
             etr = pygame.Rect(self.screen_width - 180, 15, 160, 55)
             pygame.draw.rect(self.screen, (150, 100, 50), etr, border_radius=8)
             btn_font = pygame.font.Font(None, 36)
-            self.screen.blit(btn_font.render("End Turn", True, WHITE), btn_font.render("End Turn", True, WHITE).get_rect(center=etr.center))
+            self.screen.blit(btn_font.render("End Phase", True, WHITE), btn_font.render("End Phase", True, WHITE).get_rect(center=etr.center))
+
+    def _draw_turn_transition(self):
+        """Draw the turn transition overlay."""
+        if self.turn_flash <= 0:
+            return
+        
+        # Calculate animation progress (starts at 1.0, goes to 0.0)
+        # Fade in for first 0.4s, stay for middle 2.2s, fade out for last 0.4s
+        if self.turn_flash > 2.6:
+            # Fade in phase
+            fade_progress = 1.0 - (self.turn_flash - 2.6) / 0.4
+        elif self.turn_flash < 0.4:
+            # Fade out phase
+            fade_progress = self.turn_flash / 0.4
+        else:
+            # Stay visible
+            fade_progress = 1.0
+        
+        fade_progress = max(0, min(1.0, fade_progress))
+        
+        # Dark overlay background
+        overlay_alpha = int(150 * fade_progress)
+        overlay = pygame.Surface((self.screen_width, self.screen_height), pygame.SRCALPHA)
+        overlay.fill((0, 0, 0, overlay_alpha))
+        self.screen.blit(overlay, (0, 0))
+        
+        # Only show "YOUR TURN" (opponent transitions are suppressed)
+        text_color = GREEN
+        message = "YOUR TURN"
+        
+        # Add phase name as subtitle
+        current_phase = self.game_state.get("phase", "") if self.game_state else ""
+        phase_display = current_phase.replace("_", " ").title() if current_phase else ""
+        
+        # Large transition text in center
+        transition_font = pygame.font.Font(None, 120)
+        text_surf = transition_font.render(message, True, text_color)
+        text_alpha = int(255 * fade_progress)
+        text_with_alpha = pygame.Surface(text_surf.get_size(), pygame.SRCALPHA)
+        text_with_alpha.fill((0, 0, 0, 0))
+        
+        # Create text with alpha
+        for x in range(text_surf.get_width()):
+            for y in range(text_surf.get_height()):
+                color = text_surf.get_at((x, y))
+                if color.a > 0:
+                    text_with_alpha.set_at((x, y), (color.r, color.g, color.b, text_alpha))
+        
+        text_rect = text_with_alpha.get_rect(center=(self.screen_width // 2, self.screen_height // 2 - 40))
+        self.screen.blit(text_with_alpha, text_rect)
+        
+        # Phase name as subtitle
+        if phase_display:
+            phase_font = pygame.font.Font(None, 60)
+            phase_surf = phase_font.render(f"[{phase_display} Phase]", True, text_color)
+            phase_alpha = int(200 * fade_progress)
+            phase_with_alpha = pygame.Surface(phase_surf.get_size(), pygame.SRCALPHA)
+            phase_with_alpha.fill((0, 0, 0, 0))
+            
+            for x in range(phase_surf.get_width()):
+                for y in range(phase_surf.get_height()):
+                    color = phase_surf.get_at((x, y))
+                    if color.a > 0:
+                        phase_with_alpha.set_at((x, y), (color.r, color.g, color.b, phase_alpha))
+            
+            phase_rect = phase_with_alpha.get_rect(center=(self.screen_width // 2, self.screen_height // 2 + 60))
+            self.screen.blit(phase_with_alpha, phase_rect)
+        
+        # Add subtle glow effect for "YOUR TURN"
+        if fade_progress > 0.3:
+            glow_alpha = int(50 * fade_progress)
+            glow = pygame.Surface((text_with_alpha.get_width() + 40, text_with_alpha.get_height() + 40), pygame.SRCALPHA)
+            pygame.draw.ellipse(glow, (0, 255, 0, glow_alpha), glow.get_rect())
+            self.screen.blit(glow, (text_rect.x - 20, text_rect.y - 20))
+
 
     def _draw_opponent_info(self):
         """Display opponent's hand card count and role."""

@@ -313,6 +313,7 @@ class GameSession:
 
             return {
                 "turn": gm.current_turn,
+                "phase": gm.current_phase.name,  # New: send phase name
                 "current_player": "attacker" if gm.current_player == Player.ATTACKER else "defender",
                 "your_role": player_key,
                 "is_your_turn": gm.current_player == player,

@@ -12,10 +12,16 @@ class Player(Enum):
 
 
 class GamePhase(Enum):
-    MAIN = 0
-    DECLARE_ATTACKERS = 1
-    DECLARE_BLOCKERS = 2
-    COMBAT_DAMAGE = 3
+    DEPLOYMENT = 0      # Both players take turns placing troops
+    MOVEMENT = 1        # Both players move troops
+    COMBAT = 2          # Combat is resolved
+
+
+class TurnPhaseState(Enum):
+    """Sub-state within a phase to track which player is acting."""
+    PLAYER_1_ACTING = 0  # Attacker acting
+    PLAYER_2_ACTING = 1  # Defender acting
+    PHASE_COMPLETE = 2   # Both players done, ready to advance
 
 
 # ========== EFFECT TYPE CONSTANTS ==========
@@ -693,21 +699,23 @@ class GameManager:
 
     def __init__(self):
         self.current_turn = 1
+        self.current_phase = GamePhase.DEPLOYMENT  # New turn phase system
+        self.phase_state = TurnPhaseState.PLAYER_1_ACTING  # New sub-state
         self.current_player = Player.ATTACKER
         self.attacker_has_passed = False
         self.defender_has_passed = False
 
-        # Track if player has drawn a card this phase (1 draw per phase)
-        self.attacker_has_drawn = False
-        self.defender_has_drawn = False
+        # Track if player has drawn a card this turn (resets at turn start, not per phase)
+        self.attacker_has_drawn_this_turn = False
+        self.defender_has_drawn_this_turn = False
         
         # Track territory bonus draws (count how many bonus draws used)
         self.attacker_bonus_draws_used = 0
         self.defender_bonus_draws_used = 0
 
-        # Track if player has moved a card this phase (1 move per phase)
-        self.attacker_has_moved = False
-        self.defender_has_moved = False
+        # Track if player has moved a card this phase (resets at phase start)
+        self.attacker_has_moved_this_phase = False
+        self.defender_has_moved_this_phase = False
 
         # Reinforcement queue: [{card_id, card_info, turns_remaining, player}, ...]
         self.hand_reinforcement_queue: list[dict] = []
@@ -729,6 +737,7 @@ class GameManager:
 
         # Callbacks for events
         self.on_turn_changed: Callable | None = None
+        self.on_phase_changed: Callable | None = None
         self.on_card_placed: Callable | None = None
         self.on_card_arrived: Callable | None = None
         self.on_location_captured: Callable | None = None
@@ -758,7 +767,7 @@ class GameManager:
         self.defender_bonus_draws = 0
 
         # ========== TAPPED COMBAT SYSTEM ==========
-        self.combat_phase = GamePhase.MAIN
+        # Note: combat_phase is now managed by current_phase (DEPLOYMENT, MOVEMENT, COMBAT)
         self.pending_attackers: list[dict] = []  # [{location, card_index, player, card}]
         self.pending_blocks: dict[int, list[int]] = {}  # attacker_idx -> [blocker_indices]
 
@@ -854,7 +863,7 @@ class GameManager:
             # Total draws available: 1 base + 1 per bonus territory
             total_draws_available = 1 + bonus_territories
             # Count total draws used: base draw + bonus draws
-            draws_used = (1 if self.attacker_has_drawn else 0) + self.attacker_bonus_draws_used
+            draws_used = (1 if self.attacker_has_drawn_this_turn else 0) + self.attacker_bonus_draws_used
             return draws_used < total_draws_available
         else:
             defender_starting = {"Courtyard", "Keep"}
@@ -865,7 +874,7 @@ class GameManager:
             # Total draws available: 1 base + 1 per bonus territory
             total_draws_available = 1 + bonus_territories
             # Count total draws used: base draw + bonus draws
-            draws_used = (1 if self.defender_has_drawn else 0) + self.defender_bonus_draws_used
+            draws_used = (1 if self.defender_has_drawn_this_turn else 0) + self.defender_bonus_draws_used
             return draws_used < total_draws_available
 
     def draw_card_from_deck(self, card_id: str, player: Player) -> bool:
@@ -883,13 +892,13 @@ class GameManager:
                 # Mark that this player has drawn
                 # First draw uses the regular flag, subsequent draws increment the bonus counter
                 if player == Player.ATTACKER:
-                    if not self.attacker_has_drawn:
-                        self.attacker_has_drawn = True
+                    if not self.attacker_has_drawn_this_turn:
+                        self.attacker_has_drawn_this_turn = True
                     else:
                         self.attacker_bonus_draws_used += 1
                 else:
-                    if not self.defender_has_drawn:
-                        self.defender_has_drawn = True
+                    if not self.defender_has_drawn_this_turn:
+                        self.defender_has_drawn_this_turn = True
                     else:
                         self.defender_bonus_draws_used += 1
             return result
@@ -988,62 +997,89 @@ class GameManager:
         return arrived_cards
 
     def end_turn(self):
-        """End current player's phase."""
+        """End current player's action in the current phase."""
         player_name = "Attacker" if self.current_player == Player.ATTACKER else "Defender"
-        print(f"{player_name} ended their phase")
+        phase_name = self.current_phase.name
+        print(f"{player_name} ended their action in {phase_name} phase")
 
+        # Switch to the other player in this phase
         if self.current_player == Player.ATTACKER:
             self.attacker_has_passed = True
             self.current_player = Player.DEFENDER
-            # Reset defender's flags for their new phase
-            self.defender_has_drawn = False
-            self.defender_bonus_draws_used = 0
-            self.defender_has_moved = False
-            # Untap defender's cards at start of their turn
-            self.untap_cards(Player.DEFENDER)
-            print("Defender's phase begins")
-            if self.on_turn_changed:
-                self.on_turn_changed(self.current_turn, "Defender")
+            print(f"Defender's action in {phase_name} phase begins")
+            if self.on_phase_changed:
+                self.on_phase_changed(self.current_turn, self.current_phase.name, "Defender")
         else:
             self.defender_has_passed = True
-
+            
+            # Both players have acted in this phase
             if self.attacker_has_passed and self.defender_has_passed:
-                print(f"=== Both players passed - processing turn {self.current_turn} ===")
-                self.process_turn()
+                print(f"=== {phase_name} phase complete ===")
+                
+                # Advance to next phase or next turn
+                if self.current_phase == GamePhase.DEPLOYMENT:
+                    # Move to MOVEMENT phase
+                    self.current_phase = GamePhase.MOVEMENT
+                    self.attacker_has_passed = False
+                    self.defender_has_passed = False
+                    self.attacker_has_moved_this_phase = False
+                    self.defender_has_moved_this_phase = False
+                    self.current_player = Player.ATTACKER
+                    print(f"=== MOVEMENT phase begins ===")
+                    if self.on_phase_changed:
+                        self.on_phase_changed(self.current_turn, "MOVEMENT", "Attacker")
+                
+                elif self.current_phase == GamePhase.MOVEMENT:
+                    # Move to COMBAT phase
+                    self.current_phase = GamePhase.COMBAT
+                    self.attacker_has_passed = False
+                    self.defender_has_passed = False
+                    self.current_player = Player.ATTACKER
+                    print(f"=== COMBAT phase begins ===")
+                    if self.on_phase_changed:
+                        self.on_phase_changed(self.current_turn, "COMBAT", "Attacker")
+                
+                elif self.current_phase == GamePhase.COMBAT:
+                    # Process combat and advance to next turn
+                    print(f"=== Processing turn {self.current_turn} ===")
+                    self.process_turn()
 
-                # Process end-of-turn abilities at all locations
-                for loc in self.LOCATIONS:
-                    effects = AbilityProcessor.process_end_of_turn(self, loc)
-                    for effect in effects:
+                    # Process end-of-turn abilities at all locations
+                    for loc in self.LOCATIONS:
+                        effects = AbilityProcessor.process_end_of_turn(self, loc)
+                        for effect in effects:
+                            print(f"[ABILITY] {effect}")
+
+                    # Tick effect durations (expire temporary effects)
+                    tick_effects = AbilityProcessor.tick_effect_durations(self)
+                    for effect in tick_effects:
                         print(f"[ABILITY] {effect}")
 
-                # Tick effect durations (expire temporary effects)
-                tick_effects = AbilityProcessor.tick_effect_durations(self)
-                for effect in tick_effects:
-                    print(f"[ABILITY] {effect}")
+                    # Accumulate capture power and check for captures
+                    self.accumulate_capture_power()
+                    self.check_captures()
 
-                # Accumulate capture power and check for captures
-                self.accumulate_capture_power()
-                self.check_captures()
+                    # Reset all phase and action flags for new turn
+                    self.attacker_has_passed = False
+                    self.defender_has_passed = False
+                    self.attacker_has_drawn_this_turn = False
+                    self.defender_has_drawn_this_turn = False
+                    self.attacker_bonus_draws_used = 0
+                    self.defender_bonus_draws_used = 0
+                    self.attacker_has_moved_this_phase = False
+                    self.defender_has_moved_this_phase = False
+                    
+                    # Move to next turn
+                    self.current_turn += 1
+                    self.current_phase = GamePhase.DEPLOYMENT
+                    self.current_player = Player.ATTACKER
+                    
+                    # Untap attacker's cards at start of new turn
+                    self.untap_cards(Player.ATTACKER)
 
-                self.attacker_has_passed = False
-                self.defender_has_passed = False
-                # Reset all flags for new turn
-                self.attacker_has_drawn = False
-                self.defender_has_drawn = False
-                self.attacker_bonus_draws_used = 0
-                self.defender_bonus_draws_used = 0
-                self.attacker_has_moved = False
-                self.defender_has_moved = False
-                self.current_turn += 1
-                self.current_player = Player.ATTACKER
-
-                # Untap attacker's cards at start of their turn
-                self.untap_cards(Player.ATTACKER)
-
-                print(f"=== Turn {self.current_turn} begins - Attacker's phase ===")
-                if self.on_turn_changed:
-                    self.on_turn_changed(self.current_turn, "Attacker")
+                    print(f"=== Turn {self.current_turn} DEPLOYMENT phase begins ===")
+                    if self.on_turn_changed:
+                        self.on_turn_changed(self.current_turn, "Attacker")
 
     def get_cards_at_location(self, location: str, player: Player) -> list:
         """Get all cards at a location for a specific player (across all zones)."""
@@ -1780,7 +1816,7 @@ class GameManager:
         """Clear pending attackers and blockers."""
         self.pending_attackers = []
         self.pending_blocks = {}
-        self.combat_phase = GamePhase.MAIN
+        # Note: combat phase is now managed by current_phase
 
     # ========== HEARTHSTONE-STYLE COMBAT ==========
 
@@ -2062,9 +2098,9 @@ class GameManager:
         """Get remaining draws for this phase."""
         max_draws = self.get_max_draws(player)
         if player == Player.ATTACKER:
-            drawn = 1 if self.attacker_has_drawn else 0
+            drawn = 1 if self.attacker_has_drawn_this_turn else 0
         else:
-            drawn = 1 if self.defender_has_drawn else 0
+            drawn = 1 if self.defender_has_drawn_this_turn else 0
         return max(0, max_draws - drawn)
 
     def accumulate_capture_power(self):
