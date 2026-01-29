@@ -26,9 +26,6 @@ CARDS_DATA = {
     "War_Hound": [
         "Unit", "Scout", "Dog", 1, 1, 1, "War Hound", ""
     ],
-    "Knight": [
-        "Unit", "", "Human", 3, 3, 3, "Knight", ""
-    ],
     "Trebuchet": [
         "Unit", "Machinery", "", 5, 5, 7, "Trebuchet",
         "Destructive: Can target Stations"
@@ -208,6 +205,128 @@ CARDS_DATA = {
     "Executioner": [
         "Unit", "Execute", "Human", 5, 3, 5, "Executioner",
         "Execute:Instantly kills enemies with 2 or less health"
+    ],
+    # === LOGISTICS & TIME MANIPULATORS ===
+    "Quartermaster": [
+        "Unit", "Support", "Human", 1, 3, 4, "Quartermaster", 
+        "Logistics: While alive, your other cards arrive 1 turn faster (min 1)", 
+        ""
+    ],
+    "Chronometrist": [
+        "Unit", "Mage", "Human", 1, 2, 3, "Chronometrist", 
+        "Haste: Selected friendly unit acts immediately", 
+        "On Play: Reduce the wait time of all your pending cards by 1"
+    ],
+    "Saboteur_Master": [
+        "Unit", "Stealth", "Human", 2, 2, 4, "Saboteur Master", 
+        "", 
+        "On Play: Increase the wait time of opponent's pending cards by 1"
+    ],
+    "Oracle": [
+        "Unit", "Mystic", "Human", 0, 2, 2, "Oracle", 
+        "Foresight: View the opponent's pending card queue", 
+        ""
+    ],
+    # === "EMERGENCY" UNITS (Low Cost/Fast Arrival) ===
+    # These are for when you are losing NOW and need help next turn.
+    "Peasant_Mob": [
+        "Unit", "Horde", "Human", 1, 1, 0, "Peasant Mob", 
+        "Rush: Arrives instantly (0 turns)", 
+        ""
+    ],
+    "Mercenary_Captain": [
+        "Unit", "Mercenary", "Human", 3, 3, 1, "Mercenary Captain", 
+        "Greedy: Dies if you don't discard a card at start of turn", 
+        ""
+    ],
+    "Disposable_Guard": [
+        "Unit", "Defender", "Human", 0, 6, 1, "Disposable Guard", 
+        "Taunt, Fragile: Dies instantly after taking damage once", 
+        ""
+    ],
+    # === "THE LONG MARCH" (High Cost/Late Game) ===
+    # These take 7+ turns to arrive, so they are "Win Conditions" you plan around.
+    "Siege_Goliath": [
+        "Unit", "Machinery", "Construct", 8, 8, 8, "Siege Goliath", 
+        "Unstoppable: Cannot be stopped by Walls or Taunt", 
+        ""
+    ],
+    "Dragon_Egg": [
+        "Unit", "Object", "Dragon", 0, 5, 2, "Dragon Egg", 
+        "Incubation: If this unit survives 3 turns, it transforms into an Elder Dragon", 
+        ""
+    ],
+    "Elder_Dragon": [
+        # Note: Usually summoned by Egg, but if drafted, takes forever to arrive
+        "Unit", "Legendary", "Dragon", 9, 9, 9, "Elder Dragon", 
+        "Flying, Breath: Attacks damage to the whole area", 
+        ""
+    ],
+
+    # === SUMMONERS (The Loophole) ===
+    # Loophole: The Summoner takes time to arrive, but his minions appear instantly.
+    "Beast_Caller": [
+        "Unit", "Summoner", "Human", 2, 3, 4, "Beast Caller", 
+        "Call: Summons a Wolf (Cost 0) instantly every turn", 
+        ""
+    ],
+    "Necropolis_Wagon": [
+        "Unit", "Machinery", "Undead", 0, 5, 5, "Necropolis Wagon", 
+        "Factory: Spawns a Skeleton instantly at the start of every turn", 
+        ""
+    ],
+    # === AOE & CROWD CLEARING ===
+    "Pyromancer": [
+        "Unit", "Magic,AoE", "Human", 2, 2, 4, "Pyromancer", 
+        "Volatile: On death, deals 2 damage to all adjacent units (friend or foe)", 
+        "On Play: Fireball - Deals 2 damage to a 3x3 area"
+    ],
+    "Storm_Caller": [
+        "Unit", "Magic,Control", "Human", 1, 2, 5, "Storm Caller", 
+        "Chain Lightning: Attacks bounce to 2 additional targets for half damage", 
+        ""
+    ],
+    "Plague_Rat": [
+        "Unit", "Beast", "Rat", 1, 1, 2, "Plague Rat", 
+        "Infectious: Upon dying, infects all adjacent units (they die in 2 turns)", 
+        ""
+    ],
+    "Siege_Engineer": [
+        "Unit", "Support", "Human", 2, 3, 3, "Siege Engineer", 
+        "Barricade: Can construct a 'Spiked Wall' (0/4) that damages attackers", 
+        ""
+    ],
+    # === DISPLACEMENT & POSITIONING ===
+    "Wind_Mage": [
+        "Unit", "Magic,Control", "Human", 1, 2, 3, "Wind Mage", 
+        "Gust: Attacks push the enemy back 1 space", 
+        "On Play: Push all enemies in the area to another area"
+    ],
+    "Shield_Basher": [
+        "Unit", "Infantry", "Human", 2, 4, 3, "Shield Basher", 
+        "Knockback: If this unit deals damage, it pushes the target back to another area", 
+        ""
+    ],
+    # === LOCKDOWN & STUNS ===
+    "Frost_Archer": [
+        "Unit", "Ranged,Ice", "Elf", 2, 2, 4, "Frost Archer", 
+        "Chilling Shot: Targets hit cannot move next turn", 
+        ""
+    ],
+    "Medusa": [
+        "Unit", "Monster", "Gorgon", 2, 4, 6, "Medusa", 
+        "Stone Gaze: Any unit that attacks Medusa is turned to Stone (Stunned forever until cleansed)", 
+        ""
+    ],
+    "Net_Thrower": [
+        "Unit", "Ranged", "Human", 1, 2, 2, "Net Thrower", 
+        "Entangle: Attacks deal no damage but Root the target (cannot move)", 
+        ""
+    ],
+    "Doomsayer": [
+        "Unit", "Cultist", "Human", 0, 1, 6, "Doomsayer", 
+        "Apocalypse: When this unit arrives, DESTROY ALL UNITS on the board.", 
+        "Prophecy: While in the queue, both players can see this card coming."
     ],
 }
 

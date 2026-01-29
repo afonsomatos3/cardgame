@@ -14,7 +14,6 @@ class Player(Enum):
 class GamePhase(Enum):
     DEPLOYMENT = 0      # Both players take turns placing troops
     MOVEMENT = 1        # Both players move troops
-    COMBAT = 2          # Combat is resolved
 
 
 class TurnPhaseState(Enum):
@@ -767,7 +766,7 @@ class GameManager:
         self.defender_bonus_draws = 0
 
         # ========== TAPPED COMBAT SYSTEM ==========
-        # Note: combat_phase is now managed by current_phase (DEPLOYMENT, MOVEMENT, COMBAT)
+        # Note: combat_phase is now managed by current_phase (DEPLOYMENT, MOVEMENT)
         self.pending_attackers: list[dict] = []  # [{location, card_index, player, card}]
         self.pending_blocks: dict[int, list[int]] = {}  # attacker_idx -> [blocker_indices]
 
@@ -916,6 +915,11 @@ class GameManager:
             player: The player placing the card
             zone: One of "attacker_zone", "middle_zone", "defender_zone"
         """
+        # Only allow deployment during DEPLOYMENT phase
+        if self.current_phase != GamePhase.DEPLOYMENT:
+            print(f"Cannot deploy cards during {self.current_phase.name} phase")
+            return False
+
         if location not in self.LOCATIONS:
             print(f"Invalid location: {location}")
             return False
@@ -1030,17 +1034,7 @@ class GameManager:
                         self.on_phase_changed(self.current_turn, "MOVEMENT", "Attacker")
                 
                 elif self.current_phase == GamePhase.MOVEMENT:
-                    # Move to COMBAT phase
-                    self.current_phase = GamePhase.COMBAT
-                    self.attacker_has_passed = False
-                    self.defender_has_passed = False
-                    self.current_player = Player.ATTACKER
-                    print(f"=== COMBAT phase begins ===")
-                    if self.on_phase_changed:
-                        self.on_phase_changed(self.current_turn, "COMBAT", "Attacker")
-                
-                elif self.current_phase == GamePhase.COMBAT:
-                    # Process combat and advance to next turn
+                    # Movement complete — process turn and advance
                     print(f"=== Processing turn {self.current_turn} ===")
                     self.process_turn()
 
@@ -1068,12 +1062,12 @@ class GameManager:
                     self.defender_bonus_draws_used = 0
                     self.attacker_has_moved_this_phase = False
                     self.defender_has_moved_this_phase = False
-                    
+
                     # Move to next turn
                     self.current_turn += 1
                     self.current_phase = GamePhase.DEPLOYMENT
                     self.current_player = Player.ATTACKER
-                    
+
                     # Untap attacker's cards at start of new turn
                     self.untap_cards(Player.ATTACKER)
 
@@ -1221,6 +1215,11 @@ class GameManager:
         Returns:
             True if move was successful
         """
+        # Only allow movement during MOVEMENT phase
+        if self.current_phase != GamePhase.MOVEMENT:
+            print(f"Cannot move cards during {self.current_phase.name} phase")
+            return False
+
         # Check if locations exist
         if from_loc not in self.LOCATIONS or to_loc not in self.LOCATIONS:
             print(f"Invalid location: {from_loc} or {to_loc}")
@@ -2113,9 +2112,6 @@ class GameManager:
         - To capture, you need at least one troop in middle_zone
         """
         for location in self.CAPTURABLE_LOCATIONS:
-            if self.location_control[location] is not None:
-                continue  # Already captured, skip
-
             atk_power = 0
             def_power = 0
 

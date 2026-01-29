@@ -7,7 +7,8 @@
       "Bash(wc:*)",
       "Bash(python main.py:*)",
       "Bash(sqlite3:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(python -m py_compile:*)"
     ]
   }
 }

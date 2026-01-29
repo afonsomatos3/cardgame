@@ -698,8 +698,11 @@ class LocationPanel:
         self._card_cache = {}
         self._card_rects = []
         self._move_buttons = []
+        self._scroll_buttons = []  # (rect, "own"/"enemy", direction +1/-1)
         self.selected_card_index = None
         self.hovered_card_index = None
+        self.own_scroll = 0
+        self.enemy_scroll = 0
 
         # Animation
         self.panel_scale = AnimatedValue(0, speed=14.0)
@@ -835,6 +838,9 @@ class LocationPanel:
         self.selected_card_index = None
         self._card_rects = []
         self._move_buttons = []
+        self._scroll_buttons = []
+        self.own_scroll = 0
+        self.enemy_scroll = 0
         self.panel_scale.set(1.0)
 
     def hide(self):
@@ -854,6 +860,7 @@ class LocationPanel:
 
         self._card_rects = []
         self._move_buttons = []
+        self._scroll_buttons = []
 
         # Overlay
         overlay = pygame.Surface((self.screen_width, self.screen_height), pygame.SRCALPHA)
@@ -924,24 +931,61 @@ class LocationPanel:
             fog_rect = fog_text.get_rect(center=(self.x + self.width // 2, mid_y + 90))
             screen.blit(fog_text, fog_rect)
 
+    def _draw_scroll_arrow(self, screen: pygame.Surface, rect: pygame.Rect, direction: str, mouse_pos: tuple):
+        """Draw a scroll arrow button (< or >)."""
+        hovered = rect.collidepoint(mouse_pos)
+        color = (180, 180, 180) if hovered else (120, 120, 120)
+        bg_color = (80, 80, 80, 200) if hovered else (60, 60, 60, 160)
+        bg = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+        pygame.draw.rect(bg, bg_color, (0, 0, rect.width, rect.height), border_radius=5)
+        screen.blit(bg, rect.topleft)
+        arrow_font = pygame.font.Font(None, 28)
+        arrow_text = arrow_font.render(direction, True, color)
+        screen.blit(arrow_text, arrow_text.get_rect(center=rect.center))
+
     def _draw_own_cards_row(self, screen: pygame.Surface, cards: list, x: int, y: int, mouse_pos: tuple):
-        """Draw own cards with selection."""
+        """Draw own cards with selection and scroll arrows."""
         if not cards:
             no_cards = self.small_font.render("No cards", True, GRAY)
             screen.blit(no_cards, (x, y + 40))
             return
 
         spacing = 12
-        for i, card in enumerate(cards):
-            card_x = x + i * (self.THUMB_WIDTH + spacing)
+        arrow_w = 26
+        arrow_gap = 6
+        usable_width = self.width - 40
+        max_no_scroll = usable_width // (self.THUMB_WIDTH + spacing)
 
-            if card_x + self.THUMB_WIDTH > self.x + self.width - 20:
-                more = self.small_font.render(f"+{len(cards) - i} more", True, GRAY)
-                screen.blit(more, (card_x, y + 50))
-                break
+        if len(cards) <= max_no_scroll:
+            # All cards fit, no arrows needed
+            start_idx = 0
+            max_visible = len(cards)
+            cards_start_x = x
+        else:
+            # Need scroll arrows
+            max_visible = max(1, (usable_width - 2 * (arrow_w + arrow_gap)) // (self.THUMB_WIDTH + spacing))
+            self.own_scroll = max(0, min(self.own_scroll, len(cards) - max_visible))
+            start_idx = self.own_scroll
+            has_left = self.own_scroll > 0
+            has_right = self.own_scroll + max_visible < len(cards)
+            cards_start_x = x + (arrow_w + arrow_gap if has_left else 0)
+
+            arrow_y = y + self.THUMB_HEIGHT // 2 - arrow_w // 2
+            if has_left:
+                left_rect = pygame.Rect(x, arrow_y, arrow_w, arrow_w)
+                self._draw_scroll_arrow(screen, left_rect, "<", mouse_pos)
+                self._scroll_buttons.append((left_rect, "own", -1))
+            if has_right:
+                right_x = cards_start_x + max_visible * (self.THUMB_WIDTH + spacing)
+                right_rect = pygame.Rect(right_x, arrow_y, arrow_w, arrow_w)
+                self._draw_scroll_arrow(screen, right_rect, ">", mouse_pos)
+                self._scroll_buttons.append((right_rect, "own", 1))
+
+        for vi, card in enumerate(cards[start_idx:start_idx + max_visible]):
+            i = start_idx + vi  # Real index in the full cards list
+            card_x = cards_start_x + vi * (self.THUMB_WIDTH + spacing)
 
             card_id = card.get("card_id", "Unknown")
-            # Merge database info with server card data (server data has effective stats and current health)
             card_info = {**self.cards_info.get(card_id, {}), **card}
 
             card_rect = pygame.Rect(card_x, y, self.THUMB_WIDTH, self.THUMB_HEIGHT)
@@ -979,11 +1023,10 @@ class LocationPanel:
                 screen.blit(tapped_overlay, (card_x, y))
                 tapped_font = pygame.font.Font(None, 18)
 
-                # Determine label
                 if has_moved:
                     label = "MOVED"
                 elif not can_move:
-                    label = "NEW"  # Just placed this turn
+                    label = "NEW"
                 else:
                     label = "TAPPED"
 
@@ -992,23 +1035,46 @@ class LocationPanel:
                 screen.blit(tapped_text, text_rect)
 
     def _draw_cards_row(self, screen: pygame.Surface, cards: list, x: int, y: int, visible: bool):
-        """Draw enemy cards row."""
+        """Draw enemy cards row with scroll arrows."""
         if not cards:
             no_cards = self.small_font.render("No cards", True, GRAY)
             screen.blit(no_cards, (x, y + 40))
             return
 
         spacing = 12
-        for i, card in enumerate(cards):
-            card_x = x + i * (self.THUMB_WIDTH + spacing)
+        arrow_w = 26
+        arrow_gap = 6
+        usable_width = self.width - 40
+        max_no_scroll = usable_width // (self.THUMB_WIDTH + spacing)
+        mouse_pos = pygame.mouse.get_pos()
 
-            if card_x + self.THUMB_WIDTH > self.x + self.width - 20:
-                more = self.small_font.render(f"+{len(cards) - i} more", True, GRAY)
-                screen.blit(more, (card_x, y + 50))
-                break
+        if len(cards) <= max_no_scroll:
+            start_idx = 0
+            max_visible = len(cards)
+            cards_start_x = x
+        else:
+            max_visible = max(1, (usable_width - 2 * (arrow_w + arrow_gap)) // (self.THUMB_WIDTH + spacing))
+            self.enemy_scroll = max(0, min(self.enemy_scroll, len(cards) - max_visible))
+            start_idx = self.enemy_scroll
+            has_left = self.enemy_scroll > 0
+            has_right = self.enemy_scroll + max_visible < len(cards)
+            cards_start_x = x + (arrow_w + arrow_gap if has_left else 0)
+
+            arrow_y = y + self.THUMB_HEIGHT // 2 - arrow_w // 2
+            if has_left:
+                left_rect = pygame.Rect(x, arrow_y, arrow_w, arrow_w)
+                self._draw_scroll_arrow(screen, left_rect, "<", mouse_pos)
+                self._scroll_buttons.append((left_rect, "enemy", -1))
+            if has_right:
+                right_x = cards_start_x + max_visible * (self.THUMB_WIDTH + spacing)
+                right_rect = pygame.Rect(right_x, arrow_y, arrow_w, arrow_w)
+                self._draw_scroll_arrow(screen, right_rect, ">", mouse_pos)
+                self._scroll_buttons.append((right_rect, "enemy", 1))
+
+        for vi, card in enumerate(cards[start_idx:start_idx + max_visible]):
+            card_x = cards_start_x + vi * (self.THUMB_WIDTH + spacing)
 
             card_id = card.get("card_id", "Unknown")
-            # Merge database info with server card data (server data has effective stats and current health)
             card_info = {**self.cards_info.get(card_id, {}), **card}
 
             if visible:
@@ -1077,6 +1143,15 @@ class LocationPanel:
         if not panel_rect.collidepoint(pos):
             self.hide()
             return True
+
+        # Scroll arrows
+        for btn_rect, row_type, direction in self._scroll_buttons:
+            if btn_rect.collidepoint(pos):
+                if row_type == "own":
+                    self.own_scroll += direction
+                else:
+                    self.enemy_scroll += direction
+                return False
 
         # Move buttons
         for btn_rect, destination in self._move_buttons:
@@ -2019,7 +2094,8 @@ class ThinClient:
         if self.location_panel.is_visible:
             r = self.location_panel.handle_click(pos)
             if isinstance(r, dict) and r.get("action") == "move":
-                self.network.move_card(r["from_location"], r["to_location"], r["card_index"])
+                if self.game_state and self.game_state.get("phase") == "MOVEMENT":
+                    self.network.move_card(r["from_location"], r["to_location"], r["card_index"])
                 self.location_panel.hide()
             return
         if self.combat_selector.is_visible:
@@ -2037,8 +2113,9 @@ class ThinClient:
 
     def _handle_mouse_up(self, pos):
         if self.state == STATE_GAME and self.dragging_card:
-            for name, rect in self.locations.items():
-                if rect.collidepoint(pos): self.network.place_card(self.dragging_card.card_id, name); break
+            if self.game_state and self.game_state.get("phase") == "DEPLOYMENT":
+                for name, rect in self.locations.items():
+                    if rect.collidepoint(pos): self.network.place_card(self.dragging_card.card_id, name); break
             self.dragging_card.return_to_position(); self.dragging_card = None
 
     def _handle_resize(self):
@@ -2316,7 +2393,10 @@ class ThinClient:
         cl = pygame.Rect(self.screen_width - 230, 20, 100, 40); pygame.draw.rect(self.screen, (130, 70, 70), cl, border_radius=5)
         self.screen.blit(self.small_font.render("Clear", True, WHITE), self.small_font.render("Clear", True, WHITE).get_rect(center=cl.center))
         self.screen.blit(self.font.render("Available Cards (click to add)", True, (200, 200, 100)), (20, 70))
-        cards_list = sorted(self.available_cards.keys())
+        cards_list = sorted(self.available_cards.keys(), key=lambda cid: (
+            self.available_cards[cid].get("cost", 0),
+            self.available_cards[cid].get("name", cid).lower()
+        ))
 
         # Fixed 5 columns, 2 rows - cap card height to ensure 2 rows fit
         cpr = 5  # Fixed 5 columns
@@ -2568,7 +2648,10 @@ class ThinClient:
         card_h = min(int(card_w * 1.4), max_card_h)
         
         # Check if mouse is over any card
-        cards_list = sorted(self.available_cards.keys())
+        cards_list = sorted(self.available_cards.keys(), key=lambda cid: (
+            self.available_cards[cid].get("cost", 0),
+            self.available_cards[cid].get("name", cid).lower()
+        ))
         vs = self.card_scroll * cpr
         cards_per_page = rows * cpr
         
